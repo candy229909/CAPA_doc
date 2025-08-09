@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -10,6 +10,8 @@ import uuid
 import aiofiles
 from pathlib import Path
 import tempfile
+import json, uuid
+from urllib.parse import urlparse
 
 # 檔案解析相關套件
 import docx2txt
@@ -25,6 +27,8 @@ from main_extension import (
     analyze_intent,
     NLURequest,
     NLUResponse,
+    rag_search,          # 新增: RAG 檢索函式
+    RAGRequest,          # ← 新增
     ethics_check,        # 新增: 倫理檢查函式
     EthicsRequest,       # 新增: 倫理檢查請求模型
     EthicsResult,        # 新增: 倫理檢查結果模型
@@ -52,19 +56,62 @@ neo4j_db: Neo4jDB = None
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+MONGO_URI = (
+    os.getenv("MONGODB_URL")
+    or os.getenv("MONGO_URI")
+    or "mongodb://mongo:27017/chatdb"   # docker-compose 預設
+)
+
+parsed = urlparse(MONGO_URI)
+MONGO_DB = (parsed.path.lstrip("/") or os.getenv("MONGO_DB") or "chatdb")
+
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASS = os.getenv("NEO4J_PASSWORD") or os.getenv("NEO4J_PASS") or "password123"
+
+mongo = MongoDB(MONGO_URI, MONGO_DB)
+graph = Neo4jDB(NEO4J_URI, NEO4J_USER, NEO4J_PASS)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """應用啟動與關閉時執行：連接/關閉資料庫等"""
+    await mongo.connect()
+    await graph.connect()
+    if hasattr(graph, "ensure_constraints"):
+        await graph.ensure_constraints()
+
+    app.state.mongo = mongo
+    app.state.neo4j = graph
+
     global mongodb, neo4j_db
-    mongodb = MongoDB()
-    neo4j_db = Neo4jDB()
-    await mongodb.connect()
-    await neo4j_db.connect()
-    print("資料庫連接成功")
-    yield   # 在此期間應用正常運行
-    await mongodb.close()
-    await neo4j_db.close()
-    print("資料庫連接已關閉")
+    mongodb = mongo
+    neo4j_db = graph
+
+    yield
+
+    await graph.close()
+    await mongo.close()
+
+
+async def extract_file_context_from_messages(conv_id: str, max_chars: int = 1500) -> str:
+    """從會話消息中提取最近上傳檔案的文字內容片段"""
+    msgs = await mongodb.get_messages(conv_id)
+    file_msgs = [m for m in msgs if isinstance(m, dict) and m.get("file_info")]
+    if not file_msgs:
+        return ""
+    # 取最新一筆檔案訊息內容（截斷長度）
+    content = file_msgs[-1].get("content", "")
+    # 提取 "檔案內容:" 後的文字部分:contentReference[oaicite:32]{index=32}
+    for marker in ("檔案內容:", "文件內容:", "內容:"):
+        if marker in content:
+            content = content.split(marker, 1)[-1]
+            break
+    return content.strip()[:max_chars]
+
+def looks_like_doc_question(text: str) -> bool:
+    """判斷用戶提問是否提及上傳的文件（關鍵詞檢測）"""
+    keywords = ["這份文件", "本文件", "上傳", "合約", "報告", "檔案", "附件", "條文內容", "依據文件", "文件"]
+    return any(k in (text or "") for k in keywords)  # 簡化版:contentReference[oaicite:33]{index=33}
+
 
 app = FastAPI(title="AI Chat API", version="1.0.0", lifespan=lifespan)
 
@@ -213,6 +260,162 @@ async def delete_conversation(conversation_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.websocket("/ws/chat")
+async def chat_endpoint(websocket: WebSocket):
+    await websocket.accept()  # 接受 WebSocket 連線:contentReference[oaicite:5]{index=5}
+
+    try:
+        while True:
+            # 1. 接收使用者訊息
+            data_str = await websocket.receive_text()
+            data = json.loads(data_str)
+            user_message: str = data.get("message", "")
+            conv_id: str = data.get("conversation_id") or None
+            model_name: str = data.get("model") or "gemma3n:e2b"  # 模型名稱，預設使用 gemma3n:e2b
+
+            # 若無會話ID則建立新對話（會話ID將在 final 階段回傳前端）
+            if not conv_id:
+                conv_id = str(uuid.uuid4())
+                title = user_message[:50] + ("..." if len(user_message) > 50 else "")
+                await mongodb.create_conversation({
+                    "id": conv_id,
+                    "title": title or "新對話",
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                })
+            
+            # 將使用者訊息保存至資料庫:contentReference[oaicite:6]{index=6}:contentReference[oaicite:7]{index=7}
+            user_msg = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "content": user_message,
+                "role": "user",
+                "timestamp": datetime.utcnow(),
+            }
+            await mongodb.save_message(user_msg)
+            await mongodb.update_conversation_timestamp(conv_id)
+
+            # 2. NLU 意圖分析階段:contentReference[oaicite:8]{index=8}
+            await websocket.send_json({"status": "nlu", "message": "NLU 分析中...", "payload": None})
+            try:
+                # 調用現有 NLU 模組分析使用者意圖
+                nlu_dict = await analyze_intent(NLURequest(query=user_message))
+                nlu_result = NLUResponse.parse_obj(nlu_dict)
+                need_knowledge = (nlu_result.intent != "unknown")
+            except Exception as e:
+                # 若 NLU 模組發生錯誤，視為一般對話
+                need_knowledge = False
+
+            # 3. 知識檢索（RAG）階段:contentReference[oaicite:9]{index=9}
+            retrieved_info = ""
+            if need_knowledge:
+                await websocket.send_json({"status": "rag", "message": "知識檢索中...", "payload": None})
+                try:
+                    # （擴充點）調用 RAG 模組（corrected_api_code）檢索:contentReference[oaicite:10]{index=10}
+                    # rag_agent = corrected_api_code.CorrectedRAGAPI(query=user_message, documents=document_source)
+                    # rag_data = rag_agent.run()
+                    # retrieved_info = rag_data.get("context", "")
+                    # 目前暫以內建的 rag_search 模擬結果
+                    rag_resp = await rag_search(RAGRequest(question=user_message))
+                    if isinstance(rag_resp, dict):
+                        retrieved_info = rag_resp.get("context", "")
+                    else:
+                        retrieved_info = getattr(rag_resp, "context", "") or ""
+                    # （擴充點）如需將檢索結果摘要傳給前端，可在此再發送一則狀態訊息:contentReference[oaicite:11]{index=11}
+                except Exception as e:
+                    print(f"[RAG] 模組錯誤: {e}")
+                    retrieved_info = ""  # 檢索失敗則不使用外部知識
+            else:
+                # 無需知識輔助
+                retrieved_info = ""
+
+            # 4. LLM 回應生成階段:contentReference[oaicite:12]{index=12}
+            await websocket.send_json({"status": "llm", "message": "AI 回應生成中...", "payload": None})
+            # 構造提示詞：將使用者問題和（如有）檢索到的知識內容結合
+            prompt = user_message
+            if retrieved_info:
+                prompt = f"根據以下參考內容回答問題：\n{retrieved_info}\n\n問題：{user_message}"
+            else:
+                # （可選）如對話包含上傳文件且需要自動引用，加入文件內容:contentReference[oaicite:13]{index=13}:contentReference[oaicite:14]{index=14}
+                file_context = await extract_file_context_from_messages(conv_id)
+                if file_context and looks_like_doc_question(user_message):
+                    prompt = ( "你是一位法律助理，請參考以下文件內容回答使用者問題。\n"
+                               f"文件內容：\n{file_context}\n\n"
+                               f"使用者提問：{user_message}" )
+
+            # 調用本地 LLM（Ollama）產生回覆，開啟串流模式以逐步取得內容
+            final_answer = ""
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", f"{OLLAMA_HOST}/api/generate",
+                                              json={ "model": model_name, "prompt": prompt, "stream": True }) as resp:
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            # 每行為一個部分結果(JSON格式或純文字)
+                            content_piece = ""
+                            try:
+                                data_json = json.loads(line)
+                                # 若 JSON 中標記對話已完成則跳出迴圈:contentReference[oaicite:15]{index=15}:contentReference[oaicite:16]{index=16}
+                                if data_json.get("done", False):
+                                    break
+                                # 提取部分內容文本
+                                if "message" in data_json:
+                                    content_piece = data_json["message"].get("content", "")
+                                elif "response" in data_json:
+                                    content_piece = data_json["response"]
+                            except json.JSONDecodeError:
+                                content_piece = line  # 非JSON片段，直接當作文本
+                            if content_piece:
+                                final_answer += content_piece
+                                # 將模型部分回覆透過 WebSocket 發送給前端顯示:contentReference[oaicite:17]{index=17}:contentReference[oaicite:18]{index=18}
+                                await websocket.send_json({"status": "stream", "message": content_piece, "payload": None})
+            except Exception as e:
+                # 發生錯誤則回傳錯誤訊息並結束此次對話
+                err_text = f"對話產生時發生錯誤：{str(e)}"
+                await websocket.send_json({"status": "error", "message": err_text, "payload": None})
+                continue  # 繼續等待下一則使用者訊息
+
+            # 5. 倫理與安全檢查階段:contentReference[oaicite:19]{index=19}
+            await websocket.send_json({"status": "ethics", "message": "倫理檢查中...", "payload": None})
+            ethics_result = await ethics_check(EthicsRequest(response=final_answer))
+            if (isinstance(ethics_result, dict) and ethics_result.get("flagged")) or \
+               (hasattr(ethics_result, "flagged") and ethics_result.flagged):
+                reason = ethics_result["reason"] if isinstance(ethics_result, dict) else ethics_result.reason
+                final_answer = f"⚠️ 回應被標記為不當：{reason}"
+
+            # （擴充點）未來的強化模組處理掛載點（例如結果增強、翻譯等）
+            # await websocket.send_json({ "status": "enhance", "message": "增強處理中...", "payload": None })
+            # final_answer = enhanced_module.process(final_answer)
+
+            # 6. 保存 AI 回覆訊息到資料庫，更新對話標題與關係
+            ai_msg = {
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv_id,
+                "content": final_answer,
+                "role": "assistant",
+                "timestamp": datetime.utcnow(),
+            }
+            await mongodb.save_message(ai_msg)
+            await mongodb.update_conversation_timestamp(conv_id)
+            # 若為首次對話，將對話標題更新為使用者問題摘要:contentReference[oaicite:21]{index=21}
+            msg_count = await mongodb.count_messages(conv_id)
+            if msg_count <= 2:
+                new_title = user_message[:50] + ("..." if len(user_message) > 50 else "")
+                await mongodb.update_conversation_title(conv_id, new_title)
+            # 在 Neo4j 知識圖譜中記錄問答關係:contentReference[oaicite:22]{index=22}
+            await neo4j_db.save_interaction(conversation_id=conv_id, user_message=user_message, ai_response=final_answer)
+
+            # 7. 最終結果階段：傳送完整回答與會話ID:contentReference[oaicite:23]{index=23}:contentReference[oaicite:24]{index=24}
+            await websocket.send_json({
+                "status": "final",
+                "message": final_answer,
+                "payload": { "conversation_id": conv_id }
+            })
+            # （迴圈持續等待下一個使用者訊息，除非前端關閉連線）
+    except WebSocketDisconnect:
+        print("⚠️ 用戶端連線中斷")
+
 @app.post("/api/chat")
 async def chat(request: EnhancedChatRequest):
     """
@@ -301,31 +504,7 @@ async def chat(request: EnhancedChatRequest):
         else:
             # —— 一般對話模式：直接由 LLM 產生回答 ——
             # 檢查是否需要附加上傳文件內容作為輔助
-            async def extract_file_context_from_messages(conversation_id: str,
-                                                         max_chars: int = 1500,
-                                                         max_files: int = 3) -> str:
-                raw_msgs = await mongodb.get_messages(conversation_id)
-                # 過濾出包含檔案內容的訊息
-                file_msgs = [m for m in raw_msgs if isinstance(m, dict) and m.get("file_info")]
-                if not file_msgs:
-                    return ""
-                recent = file_msgs[-max_files:]
-                chunks = []
-                for m in recent:
-                    content = (m.get("content") or "")
-                    # 消息格式範例: "📎 已上傳檔案: XXX\n\n檔案內容:\n{這裡是文件文字}"
-                    # 取出 "檔案內容:" 後的部分作為上下文
-                    for key in ("檔案內容:", "文件內容:", "內容:"):
-                        if key in content:
-                            content = content.split(key, 1)[-1]
-                            break
-                    chunks.append(content.strip()[:max_chars])
-                return "\n\n".join(chunks).strip()
 
-            def looks_like_doc_question(text: str) -> bool:
-                # 判斷用戶提問是否提及上傳的文件
-                keywords = ["這份文件", "本文件", "上傳", "合約", "報告", "檔案", "附件", "條文內容", "依據文件", "文件"]
-                return any(k in text for k in keywords)
 
             file_context_text = ""
             if request.use_file_context != "never" and request.conversation_id:

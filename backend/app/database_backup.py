@@ -36,6 +36,8 @@ class MongoDB:
         self.db = None
         self.conversations_collection = None
         self.messages_collection = None
+        self.prompts_collection = None
+        self.documents_collection = None
 
     async def connect(self):
         """連接到 MongoDB 資料庫"""
@@ -49,6 +51,20 @@ class MongoDB:
         await self.conversations_collection.create_index("id", unique=True)
         await self.messages_collection.create_index("conversation_id")
         await self.messages_collection.create_index("timestamp")
+
+        self.prompts_collection = self.db.prompts
+        self.documents_collection = self.db.documents
+
+        await self.prompts_collection.create_index("id", unique=True)
+        await self.prompts_collection.create_index("conversation_id")
+        await self.prompts_collection.create_index("message_id")
+        await self.prompts_collection.create_index([("created_at", -1)])
+
+        await self.documents_collection.create_index("id", unique=True)
+        await self.documents_collection.create_index("conversation_id")
+        await self.documents_collection.create_index("prompt_id")
+        await self.documents_collection.create_index([("created_at", -1)])
+
 
     async def close(self):
         """關閉 MongoDB 連接"""
@@ -111,6 +127,39 @@ class MongoDB:
             {"id": conversation_id},
             {"$set": {"updated_at": datetime.utcnow()}}
         )
+    
+    async def save_prompt(self, conversation_id: str, message_id: str, prompt_json: dict) -> dict:
+        doc = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "prompt_json": prompt_json,
+            "created_at": datetime.utcnow(),
+        }
+        await self.prompts_collection.insert_one(doc)
+        return to_plain(doc)
+
+    async def save_document(self, conversation_id: str, prompt_id: str, type_: str,
+                            content: str, title: str | None = None, meta: dict | None = None) -> dict:
+        doc = {
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "prompt_id": prompt_id,
+            "type": type_,
+            "title": title,
+            "content": content,
+            "meta": meta or {},
+            "created_at": datetime.utcnow(),
+        }
+        await self.documents_collection.insert_one(doc)
+        return to_plain(doc)
+
+    async def get_prompt(self, prompt_id: str) -> dict | None:
+        return await self.prompts_collection.find_one({"id": prompt_id}, {"_id": 0})
+
+    async def list_documents_by_conv(self, conversation_id: str) -> list[dict]:
+        cur = self.documents_collection.find({"conversation_id": conversation_id}, {"_id": 0}).sort("created_at", -1)
+        return await cur.to_list(None)
 
 class Neo4jDB:
     def __init__(self):
