@@ -10,3 +10,4 @@ aiofiles
 docx2txt
 pydocx
 python-docx
+faiss-cpu

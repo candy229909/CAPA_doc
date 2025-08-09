@@ -74,6 +74,7 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_TIMEOUT=300
     networks:
       - chat-network
     restart: unless-stopped
@@ -84,8 +85,8 @@ services:
        SERVER_PID=$!
        echo 'Waiting for Ollama server to start...'
        sleep 10
-       echo 'Pulling gemma2:2b model...'
-       ollama pull gemma2:2b || echo 'Failed to pull model, will retry later'
+       echo 'Pulling gemma3n:e2b model...'
+       ollama pull gemma3n:e2b || echo 'Failed to pull model, will retry later'
        echo 'Ollama setup complete'
        wait $SERVER_PID"
 

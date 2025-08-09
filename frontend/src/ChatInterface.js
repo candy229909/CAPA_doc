@@ -1,8 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Send, Plus, Menu, MessageSquare, Trash2, Edit3,
-  Check, X, AlertCircle,
-  File
+  Check, X, File as FileIcon, Upload
 } from 'lucide-react';
 
 const ChatInterface = () => {
@@ -16,6 +15,7 @@ const ChatInterface = () => {
   const [editTitle, setEditTitle] = useState('');
   const [uploadError, setUploadError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
 
   const messagesEndRef = useRef(null);
   const editInputRef = useRef(null);
@@ -23,12 +23,8 @@ const ChatInterface = () => {
 
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-  // 載入對話列表
-  useEffect(() => {
-    fetchConversations();
-  }, []);
+  useEffect(() => { fetchConversations(); }, []);
 
-  // 載入當前對話訊息
   useEffect(() => {
     if (currentConversationId) {
       fetchMessages(currentConversationId);
@@ -37,12 +33,10 @@ const ChatInterface = () => {
     }
   }, [currentConversationId]);
 
-  // 自動滾動到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isLoading]);
 
-  // 編輯標題時聚焦
   useEffect(() => {
     if (editingConversationId && editInputRef.current) {
       editInputRef.current.focus();
@@ -50,125 +44,35 @@ const ChatInterface = () => {
     }
   }, [editingConversationId]);
 
-  // Fetch：對話列表
   const fetchConversations = async () => {
     try {
       const res = await fetch(`${API_URL}/api/conversations`);
       const data = await res.json();
-      setConversations(data);
-      if (!currentConversationId && data.length) {
-        setCurrentConversationId(data[0].id);
+      const list = Array.isArray(data) ? data : [];
+      setConversations(list);
+      if (!currentConversationId && list.length > 0) {
+        setCurrentConversationId(list[0].id);
       }
     } catch (err) {
       console.error('載入對話列表失敗:', err);
+      setConversations([]);
     }
   };
 
-  // Fetch：取得訊息
   const fetchMessages = async (convId) => {
     try {
       const res = await fetch(`${API_URL}/api/conversations/${convId}/messages`);
       const data = await res.json();
-      setMessages(data);
+      setMessages(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('載入訊息失敗:', err);
       setMessages([]);
     }
   };
 
-  // 傳送文字訊息
-  const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
-
-    const userMsg = {
-      id: Date.now(),
-      content: inputMessage,
-      role: 'user',
-      timestamp: new Date().toISOString()
-    };
-    setMessages(prev => [...prev, userMsg]);
-    setInputMessage('');
-    setIsLoading(true);
-
-    try {
-      const res = await fetch(`${API_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userMsg.content,
-          conversation_id: currentConversationId,
-          model: 'gemma2:2b'
-        }),
-      });
-      if (!res.ok) throw new Error(res.status);
-
-      const { response } = await res.json();
-      const aiMsg = {
-        id: Date.now() + 1,
-        content: response || '抱歉，我現在無法回應。請稍後再試。',
-        role: 'assistant',
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, aiMsg]);
-      fetchConversations();
-    } catch (err) {
-      console.error('發送訊息錯誤:', err);
-      const errorMsg = {
-        id: Date.now() + 1,
-        content: '連接錯誤，請檢查服務是否正常。',
-        role: 'assistant',
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, errorMsg]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 建立新對話
-  const createNewConversation = async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/conversations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '新對話' }),
-      });
-      if (!res.ok) throw new Error(res.status);
-
-      const newConv = await res.json();
-      setConversations(prev => [newConv, ...prev]);
-      setCurrentConversationId(newConv.id);
-      setMessages([]);
-    } catch (err) {
-      console.error('建立新對話失敗:', err);
-    }
-  };
-
-  // 刪除對話
-  const deleteConversation = async (convId) => {
-    if (conversations.length <= 1) return;
-    try {
-      const res = await fetch(`${API_URL}/api/conversations/${convId}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error(res.status);
-
-      setConversations(prev => prev.filter(c => c.id !== convId));
-      if (currentConversationId === convId) {
-        const remain = conversations.filter(c => c.id !== convId);
-        setCurrentConversationId(remain[0]?.id || null);
-      }
-    } catch (err) {
-      console.error('刪除對話失敗:', err);
-    }
-  };
-
-  // 檔案上傳：整合到訊息中
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
-    // 檔案類型 & 大小檢查
     const ext = '.' + file.name.split('.').pop().toLowerCase();
     if (!['.doc', '.docx'].includes(ext)) {
       setUploadError('僅支援 .doc / .docx');
@@ -178,133 +82,259 @@ const ChatInterface = () => {
       setUploadError('檔案大小不可超過 10MB');
       return;
     }
-
     setUploadError('');
-    setIsUploading(true);
+    const fileInfo = { id: Date.now(), file, name: file.name, size: file.size };
+    setUploadedFiles(prev => [...prev, fileInfo]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
-    // 先顯示上傳中的檔案訊息
-    const placeholder = {
-      id: Date.now(),
-      content: `📎 上傳檔案：${file.name}`,
-      role: 'user',
-      timestamp: new Date().toISOString()
-    };
-    setMessages(prev => [...prev, placeholder]);
+  const removeUploadedFile = (fileId) => {
+    setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+  };
+
+  const uploadFileToServer = async (fileInfo, conversationId) => {
+    const formData = new FormData();
+    formData.append('file', fileInfo.file);
+    if (conversationId) formData.append('conversation_id', conversationId);
+
+    const response = await fetch(`${API_URL}/api/upload-document`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!response.ok) {
+      let msg = '檔案上傳失敗';
+      try {
+        const error = await response.json();
+        if (error?.detail) msg = error.detail;
+      } catch {}
+      throw new Error(msg);
+    }
+    return await response.json();
+  };
+
+  // --- 自動判斷是否用 NLU：先調 /api/nlu，並結合關鍵字後援 ---
+  const decideUseNLU = async (content) => {
+    const kwHit = /育嬰|解雇|開除|加班|工時|資遣|懲戒|勞保|職災|契約|資方|勞方|工資|勞基法|勞動契約/.test(content);
+    try {
+      const res = await fetch(`${API_URL}/api/nlu`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: content })
+      });
+      if (!res.ok) return kwHit;
+      const data = await res.json();
+      const intent = (data?.intent || '').toLowerCase();
+      // 你可在此加入更多 intent 類別
+      const nluHit = ['statute_query', 'termination_query'].includes(intent);
+      return nluHit || kwHit;
+    } catch {
+      return kwHit; // 後援
+    }
+  };
+
+  const sendMessage = async () => {
+    const content = inputMessage.trim();
+    if ((!content && uploadedFiles.length === 0) || isLoading) return;
+
+    setIsLoading(true);
+    setUploadError('');
+
+    // 有文字就先加到畫面 & 放思考中占位
+    let thinkingId = null;
+    if (content) {
+      const userMsg = {
+        id: Date.now(),
+        content,
+        role: 'user',
+        timestamp: new Date().toISOString()
+      };
+      thinkingId = userMsg.id + 1;
+      const thinkingMsg = {
+        id: thinkingId,
+        content: '🤖 思考中…',
+        role: 'assistant',
+        timestamp: new Date().toISOString(),
+        isThinking: true
+      };
+      setMessages(prev => [...prev, userMsg, thinkingMsg]);
+      setInputMessage('');
+    }
 
     try {
-      // 若無對話，先建立
+      // 確保有對話 ID
       let convId = currentConversationId;
       if (!convId) {
+        const title = content
+          ? content.substring(0, 50) + (content.length > 50 ? '...' : '')
+          : uploadedFiles.length > 0
+          ? `文件分析: ${uploadedFiles[0].name}`
+          : '新對話';
         const res = await fetch(`${API_URL}/api/conversations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: `文件分析: ${file.name}` }),
+          body: JSON.stringify({ title }),
         });
-        if (!res.ok) throw new Error('建立對話失敗');
+        if (!res.ok) throw new Error('建立新對話失敗');
         const newConv = await res.json();
         setConversations(prev => [newConv, ...prev]);
         setCurrentConversationId(newConv.id);
         convId = newConv.id;
       }
 
-      // 上傳 FormData
-      const form = new FormData();
-      form.append('file', file);
-      form.append('conversation_id', convId);
-
-      const upRes = await fetch(`${API_URL}/api/upload-document`, {
-        method: 'POST',
-        body: form
-      });
-      if (!upRes.ok) {
-        const err = await upRes.json();
-        throw new Error(err.detail || '檔案上傳失敗');
+      // 先把暫存檔案全部丟上後端
+      for (const fileInfo of uploadedFiles) {
+        try {
+          await uploadFileToServer(fileInfo, convId);
+        } catch (error) {
+          console.error(`檔案 ${fileInfo.name} 上傳失敗:`, error);
+          setUploadError(`檔案 ${fileInfo.name} 上傳失敗: ${error.message}`);
+        }
       }
-      const result = await upRes.json();
-      if (!result.success) {
-        throw new Error(result.message || '檔案處理錯誤');
+      setUploadedFiles([]);
+
+      // 有文字才打 /api/chat
+      if (content) {
+        const use_nlu = await decideUseNLU(content);
+
+        const res = await fetch(`${API_URL}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: content,
+            conversation_id: convId,
+            model: 'gemma3n:e2b',
+            use_nlu,                     // ✅ 自動判斷
+            use_file_context: 'auto'     // ✅ 交給後端自動決定要不要用檔案內容
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const result = await res.json();
+
+        if (!currentConversationId && result?.conversation_id) {
+          setCurrentConversationId(result.conversation_id);
+        }
+
+        const aiMsg = {
+          id: Date.now() + 1,
+          content: result?.response || '抱歉，我現在無法回應，請稍後再試。',
+          role: 'assistant',
+          timestamp: new Date().toISOString()
+        };
+
+        // 用回覆替換「思考中…」
+        setMessages(prev =>
+          prev.map(m => (m.id === thinkingId ? aiMsg : m))
+        );
+      } else {
+        // 只有檔案
+        await fetchMessages(convId);
       }
 
-      // 完成後重新載入
-      await fetchMessages(convId);
       fetchConversations();
-      fileInputRef.current.value = '';
     } catch (err) {
-      console.error('檔案上傳錯誤:', err);
-      setUploadError(err.message || '上傳失敗，請重試');
+      console.error('發送訊息錯誤:', err);
+      setMessages(prev => prev.map(m =>
+        m.isThinking
+          ? { ...m, content: '連接錯誤，請檢查服務是否正常。', isThinking: false }
+          : m
+      ));
     } finally {
-      setIsUploading(false);
+      setIsLoading(false);
     }
   };
 
-  // 開始編輯對話標題
+  const createNewConversation = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/conversations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: '新對話' }),
+      });
+      if (!res.ok) throw new Error(res.status);
+      const newConv = await res.json();
+      setConversations(prev => [newConv, ...prev]);
+      setCurrentConversationId(newConv.id);
+      setMessages([]);
+      setUploadedFiles([]);
+    } catch (err) {
+      console.error('建立新對話失敗:', err);
+    }
+  };
+
+  const deleteConversation = async (convId) => {
+    if (!Array.isArray(conversations) || conversations.length <= 1) return;
+    try {
+      const res = await fetch(`${API_URL}/api/conversations/${convId}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error(res.status);
+      setConversations(prev => prev.filter(c => c.id !== convId));
+      if (currentConversationId === convId) {
+        const remain = conversations.filter(c => c.id !== convId);
+        setCurrentConversationId(remain[0]?.id || null);
+        setUploadedFiles([]);
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error('刪除對話失敗:', err);
+    }
+  };
+
   const startEditingTitle = (convId, currentTitle) => {
     setEditingConversationId(convId);
     setEditTitle(currentTitle);
   };
 
-  // 取消編輯
   const cancelEditingTitle = () => {
     setEditingConversationId(null);
     setEditTitle('');
   };
 
-  // 保存編輯後的標題
   const saveEditedTitle = async (convId) => {
     if (!editTitle.trim()) {
       cancelEditingTitle();
       return;
     }
-
     try {
       const response = await fetch(`${API_URL}/api/conversations/${convId}/title`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          title: editTitle.trim()
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: editTitle.trim() }),
       });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      // 更新本地狀態
-      setConversations(prev => 
-        prev.map(conv => 
-          conv.id === convId 
+      setConversations(prev =>
+        prev.map(conv =>
+          conv.id === convId
             ? { ...conv, title: editTitle.trim(), updated_at: new Date().toISOString() }
             : conv
         )
       );
-
       setEditingConversationId(null);
       setEditTitle('');
     } catch (error) {
       console.error('更新對話標題失敗:', error);
-      // 可以在這裡添加錯誤提示
     }
   };
 
-  // 處理編輯輸入框的鍵盤事件
-  const handleEditKeyPress = (e, convId) => {
-    if (e.key === 'Enter') {
-      saveEditedTitle(convId);
-    } else if (e.key === 'Escape') {
-      cancelEditingTitle();
+  const formatTimestamp = (ts) => {
+    if (!ts) return '';
+    try {
+      return new Date(ts).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
     }
   };
 
-  // 格式化時間
-  const formatTimestamp = (ts) =>
-    new Date(ts).toLocaleTimeString('zh-TW', {
-      hour: '2-digit', minute: '2-digit'
-    });
+  const formatFileSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
 
-  // 判斷檔案訊息
-  const isFileMessage = (msg) => msg.content.startsWith('📎');
+  const isFileMessage = (msg) => typeof msg?.content === 'string' && msg.content.startsWith('📎');
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
@@ -319,8 +349,9 @@ const ChatInterface = () => {
             新對話
           </button>
         </div>
+
         <div className="flex-1 overflow-y-auto p-2">
-          {conversations.map(conv => (
+          {(Array.isArray(conversations) ? conversations : []).map(conv => (
             <div
               key={conv.id}
               onClick={() => editingConversationId !== conv.id && setCurrentConversationId(conv.id)}
@@ -346,9 +377,7 @@ const ChatInterface = () => {
                 ) : (
                   <>
                     <div className="truncate text-sm">{conv.title}</div>
-                    <div className="text-xs text-gray-400">
-                      {formatTimestamp(conv.updated_at)}
-                    </div>
+                    <div className="text-xs text-gray-400">{formatTimestamp(conv.updated_at)}</div>
                   </>
                 )}
               </div>
@@ -397,7 +426,7 @@ const ChatInterface = () => {
             <Menu size={20} />
           </button>
           <div className="text-lg font-semibold">AI 對話系統</div>
-          {/* 隱藏檔案輸入，只接受 doc/docx */}
+
           <input
             type="file"
             ref={fileInputRef}
@@ -405,68 +434,99 @@ const ChatInterface = () => {
             className="hidden"
             accept=".doc,.docx"
           />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
+            className="p-2 hover:bg-gray-700 rounded flex-shrink-0"
+            title="上傳檔案"
+          >
+            <Upload size={18} />
+          </button>
         </div>
 
-        {/* 上傳錯誤提示 */}
-        {uploadError && (
-          <div className="bg-red-700 text-sm px-4 py-2 flex items-center gap-2">
-            <AlertCircle size={16} />
-            {uploadError}
+        {/* 不顯示 uploadError 區塊（保留功能即可） */}
+
+        {/* 準備上傳的檔案列表 */}
+        {uploadedFiles.length > 0 && (
+          <div className="bg-blue-900/50 p-3 border-b border-gray-700">
+            <div className="text-sm text-blue-200 mb-2">準備上傳的檔案：</div>
+            {uploadedFiles.map(fileInfo => (
+              <div key={fileInfo.id} className="flex items-center gap-2 bg-blue-800/50 p-2 rounded mb-1">
+                <FileIcon size={16} />
+                <span className="flex-1 text-sm">{fileInfo.name}</span>
+                <span className="text-xs text-gray-400">{formatFileSize(fileInfo.size)}</span>
+                <button
+                  onClick={() => removeUploadedFile(fileInfo.id)}
+                  className="text-red-400 hover:text-red-300"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
         {/* 訊息列表 */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map(msg => (
-            <div
-              key={msg.id}
-              className={`
-                max-w-3xl p-3 rounded-lg 
-                ${msg.role === 'user' ? 'bg-blue-600 self-end ml-auto' : 'bg-gray-700 self-start mr-auto'}
-              `}
-            >
-              {isFileMessage(msg) ? (
-                <div className="flex items-center gap-2">
-                  <File size={16} />
-                  <span className="underline">{msg.content.replace('📎 上傳檔案：', '')}</span>
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="space-y-4">
+            {messages.map(msg => (
+              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`
+                  max-w-3xl p-3 rounded-lg
+                  ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}
+                  text-left
+                `}>
+                  {isFileMessage(msg) ? (
+                    <div className="flex items-center gap-2">
+                      <FileIcon size={16} />
+                      <span className="underline">{msg.content.replace('📎 上傳檔案：', '')}</span>
+                    </div>
+                  ) : (
+                    <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
+                  )}
+                  <div className="text-xs text-gray-300 mt-1 text-right">
+                    {formatTimestamp(msg.timestamp)}
+                  </div>
                 </div>
-              ) : (
-                <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
-              )}
-              <div className="text-xs text-gray-300 mt-1 text-right">
-                {formatTimestamp(msg.timestamp)}
               </div>
-            </div>
-          ))}
-          <div ref={messagesEndRef} />
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
         </div>
 
         {/* 輸入列 */}
-        <div className="flex items-center gap-2 px-4 py-3 border-t border-gray-700 bg-gray-800">
+        <div className="flex items-end gap-2 px-4 py-3 border-t border-gray-700 bg-gray-800">
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            className="p-2 hover:bg-gray-700 rounded"
+            disabled={isUploading || isLoading}
+            className="p-2 hover:bg-gray-700 rounded flex-shrink-0"
+            title="上傳檔案"
           >
-            <Plus size={18} />
+            <Upload size={18} />
           </button>
-          <textarea
-            rows={1}
-            value={inputMessage}
-            onChange={e => setInputMessage(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
-            }}
-            placeholder="輸入訊息，按 Enter 發送"
-            className="flex-1 resize-none bg-gray-700 text-white px-3 py-2 rounded-lg focus:outline-none"
-          />
+
+          <div className="flex-1 flex flex-col">
+            <textarea
+              rows={1}
+              value={inputMessage}
+              onChange={e => setInputMessage(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
+              placeholder="輸入訊息，按 Enter 發送"
+              className="flex-1 resize-none bg-gray-700 text-white px-3 py-2 rounded-lg focus:outline-none min-h-[40px]"
+              style={{ maxHeight: '120px', height: 'auto' }}
+            />
+          </div>
+
           <button
             onClick={sendMessage}
-            disabled={isLoading}
-            className="p-3 bg-blue-600 hover:bg-blue-500 rounded-full disabled:opacity-50"
+            disabled={isLoading || (!inputMessage.trim() && uploadedFiles.length === 0)}
+            className="p-3 bg-blue-600 hover:bg-blue-500 rounded-full disabled:opacity-50 flex-shrink-0"
+            title="發送"
           >
             <Send size={18} />
           </button>
