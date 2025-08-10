@@ -61,7 +61,7 @@ const ChatInterface = () => {
     // 構造 WebSocket 連結 URL
     const baseUrl = API_URL.replace(/\/+$/, '');
     const wsProtocol = baseUrl.startsWith('https') ? 'wss' : 'ws';
-    const wsUrl = wsProtocol + '://' + baseUrl.replace(/^https?:\/\//, '') + '/ws/chat';
+    const wsUrl = wsProtocol + '://' + baseUrl.replace(/^https?:\/\//, '') + '/api/chat/ws/chat';
     ws.current = new WebSocket(wsUrl);
     ws.current.onopen = () => {
       console.log('WebSocket 連線已建立');
@@ -253,7 +253,7 @@ const ChatInterface = () => {
       setUploadedFiles([]);
       // 若有文字，透過 WebSocket 發送訊息
       if (content) {
-        const outgoing = { message: content, conversation_id: convId };
+        const outgoing = { content: content, conversation_id: convId };
         try {
           ws.current.send(JSON.stringify(outgoing));
         } catch (err) {

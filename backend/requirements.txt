@@ -3,9 +3,17 @@ uvicorn[standard]==0.24.0
 motor==3.3.2
 pymongo==4.6.0
 neo4j==5.15.0
+redis==5.0.1
 httpx==0.25.2
 python-multipart==0.0.6
 pydantic==2.5.0
+pydantic-settings==2.1.0
+dspy-ai==2.4.9
+numpy==1.24.3
+python-dotenv==1.0.0
+loguru==0.7.2
+jieba==0.42.1
+huggingface_hub>=0.16
 aiofiles
 docx2txt
 pydocx
