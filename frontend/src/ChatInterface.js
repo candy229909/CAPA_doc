@@ -45,7 +45,11 @@ const ChatInterface = () => {
 
   // 自動滾到底
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Jest 的 JSDOM 環境不支援 scrollIntoView，需先確認函式存在
+    const el = messagesEndRef.current;
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, isLoading]);
 
   // 編輯標題時自動聚焦

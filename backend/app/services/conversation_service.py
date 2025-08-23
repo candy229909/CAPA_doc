@@ -11,13 +11,13 @@ class ConversationService:
     async def list_conversations(self) -> List[Dict[str, Any]]:
         return await self.mongo.get_conversations()
 
-    async def create_conversation(self):
+    async def create_conversation(self, title: str = "New Chat"):
         conv_id = str(uuid.uuid4())
         data = {
             "id": conv_id,
-            "title": "New Chat",
+            "title": title or "New Chat",
             "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
+            "updated_at": datetime.utcnow(),
         }
         await self.mongo.create_conversation(data)
         return data

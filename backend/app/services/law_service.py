@@ -1,6 +1,8 @@
 # app/services/law_service.py
-import re, json, os, httpx
+import re, json, os, httpx, logging
 from app.database.db_neo4j import Neo4jDB
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_LABELS = {"Law", "Statute", "Article"}
 ALLOWED_RELS = {"HAS_ARTICLE"}
@@ -45,8 +47,11 @@ class LawService:
         self.neo4j = neo4j
 
     async def query(self, user_query: str) -> dict:
+        logger.info("LawService query: %s", user_query)
         cypher = await _llm_generate_cypher(user_query)
+        logger.debug("Generated cypher: %s", cypher)
         if not cypher or not _cypher_is_safe(cypher):
+            logger.warning("Using fallback keyword search for query: %s", user_query)
             q = (user_query or "").replace("'", " ")
             cypher = (
                 "MATCH (l:Law)-[:HAS_ARTICLE]->(s:Statute) "
@@ -55,4 +60,5 @@ class LawService:
                 "LIMIT 5"
             )
         rows = await self.neo4j.run_read_query(cypher)
+        logger.info("LawService hits=%d", len(rows) if rows else 0)
         return {"cypher": cypher, "hits": rows or []}

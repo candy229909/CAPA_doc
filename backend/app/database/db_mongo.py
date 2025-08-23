@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from typing import Any, Dict, Optional, List
 from datetime import datetime
 import uuid
+import asyncio, re
 
 def strip_id(obj):
     if isinstance(obj, list):
@@ -58,7 +59,10 @@ class MongoDB:
         await self.documents.create_index("id", unique=True)
         await self.documents.create_index("conversation_id")
         await self.documents.create_index("prompt_id")
-        await self.documents.create_index([("created_at", -1)])
+        await self.documents.create_index(
+            [("title", "text"), ("content", "text"), ("chunks.text", "text")],
+            name="documents_text_index"
+        )
 
     async def close(self):
         if self.client:
@@ -141,26 +145,65 @@ class MongoDB:
             "prompt_json": prompt_json,
             "created_at": datetime.utcnow(),
         }
-        await self.prompts_collection.insert_one(doc)
+        # Use self.prompts instead of the undefined prompts_collection
+        await self.prompts.insert_one(doc)
         return strip_id(doc)
 
-    async def save_document(self, conversation_id: str, prompt_id: str, type_: str,
-                            content: str, title: str | None = None, meta: dict | None = None) -> dict:
+    async def save_document_chunks(self, conversation_id: str, title: str, content: str,
+        chunks: list[dict],
+        meta: dict | None = None) -> dict:
+        
         doc = {
             "id": str(uuid.uuid4()),
             "conversation_id": conversation_id,
-            "prompt_id": prompt_id,
-            "type": type_,
+            "prompt_id": "file_upload:" + str(uuid.uuid4()),
+            "type": "upload",
             "title": title,
             "content": content,
+            "chunks": chunks,     # <== 讓 search_doc_chunks() 能命中
             "meta": meta or {},
             "created_at": datetime.utcnow(),
         }
         await self.documents.insert_one(doc)
         return strip_id(doc)
+    
+    def _simple_tokens(self, s: str) -> list[str]:
+        # 中英混合字詞切割；移除太短的 token
+        return [t for t in re.findall(r"[\w\u4e00-\u9fff]{2,}", (s or "").lower())]
+    
+    # ✅ 依查詢關鍵詞，回傳最相關的「切塊」片段
+    async def search_doc_chunks(self, conversation_id: str, query: str, top_k: int = 3) -> list[dict]:
+        # 先用 $text 找到最接近的文件（不需 Atlas Search）
+        cur = self.documents.find(
+            {"conversation_id": conversation_id, "$text": {"$search": query}},
+            {"_id": 0, "title": 1, "content": 1, "chunks": 1, "score": {"$meta": "textScore"}}
+        ).sort([("score", {"$meta": "textScore"})]).limit(8)
+        docs = await cur.to_list(length=None)
+
+        tokens = set(self._simple_tokens(query))
+        results: list[dict] = []
+
+        for d in docs:
+            chunks = d.get("chunks") or [{"idx": 0, "text": d.get("content", "")}]
+            best = None
+            best_score = -1
+            for ch in chunks:
+                txt = (ch.get("text") if isinstance(ch, dict) else str(ch)) or ""
+                score = sum(1 for t in tokens if t in txt.lower())
+                if score > best_score:
+                    best_score = score
+                    best = {
+                        "title": d.get("title") or (d.get("meta", {}) or {}).get("filename", ""),
+                        "idx": ch.get("idx", 0),
+                        "text": txt
+                    }
+            if best and (best.get("text") or "").strip():
+                results.append(best)
+
+        return results[:top_k]
 
     async def get_prompt(self, prompt_id: str) -> dict | None:
-        return await self.prompts_collection.find_one({"id": prompt_id}, {"_id": 0})
+        return await self.prompts.find_one({"id": prompt_id}, {"_id": 0})
 
     async def list_documents_by_conv(self, conversation_id: str) -> list[dict]:
         cur = self.documents.find({"conversation_id": conversation_id}, {"_id": 0}).sort("created_at", -1)

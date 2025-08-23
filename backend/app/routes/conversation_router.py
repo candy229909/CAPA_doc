@@ -19,11 +19,11 @@ async def create_conversation(request: Request, conversation: ConversationCreate
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/{conversation_id}/title")
-async def rename_conversation(conversation_id: str, title: str, request: Request):
+async def rename_conversation(conversation_id: str, request: Request, conversation: ConversationCreate):
     svc = ConversationService(request.app.state.mongo)
     try:
-        await svc.rename_conversation(conversation_id, title)
-        return {"message": "對話標題更新成功", "title": title}
+        await svc.rename_conversation(conversation_id, conversation.title)
+        return {"message": "對話標題更新成功", "title": conversation.title}
     except ValueError as ve:
         raise HTTPException(status_code=404, detail=str(ve))
     except Exception as e:

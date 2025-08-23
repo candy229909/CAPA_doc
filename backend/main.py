@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database.db_mongo import MongoDB
 from app.database.db_neo4j import Neo4jDB
+import logging, os
 
 from app.routes.conversation_router import router as conversation_router
 from app.routes.file_router import router as file_router
@@ -12,6 +13,9 @@ from app.routes.law_router import router as law_router
 from app.routes.nlu_router import router as nlu_router
 from app.routes.rag_router import router as rag_router
 from app.routes.ethics_router import router as ethics_router
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
 
 MONGODB_URL = "mongodb://mongo:27017/chatdb"
 MONGODB_DB = "chatdb"
@@ -37,6 +41,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup():
+        logger.info("Starting up backend service")
         await app.state.mongo.connect()
         await app.state.neo4j.connect()
         if hasattr(app.state.neo4j, "ensure_constraints"):
@@ -44,12 +49,14 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown():
+        logger.info("Shutting down backend service")
         await app.state.mongo.close()
         await app.state.neo4j.close()
 
     # Register blueprints (routers)
     app.include_router(conversation_router, prefix="/api/conversations", tags=["conversations"])
-    app.include_router(file_router,         prefix="/api/file_uploads", tags=["files"])
+    # File upload router: expose '/api/upload-document' instead of '/api/file_uploads/upload-document'
+    app.include_router(file_router,         prefix="/api", tags=["files"])
     app.include_router(chat_router,         prefix="/api/chat", tags=["chat"])
     app.include_router(health_router,       prefix="/api/health", tags=["health"])
     app.include_router(law_router,          prefix="/api/law_advice", tags=["law"])
