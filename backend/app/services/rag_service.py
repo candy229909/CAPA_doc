@@ -62,7 +62,7 @@ class GraphRAGService:
         context = "\n---\n".join(retrieved_docs)
         return context
 
-    async def _build_response(self, question: str, hits: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _build_response(self, question: str, hits: List[Dict[str, Any]], cypher: str = "",) -> Dict[str, Any]:
         documents = [
             {
                 "statute_id": h.get("statute_id", ""),
@@ -90,7 +90,7 @@ class GraphRAGService:
                     else pred
                 )
                 logger.info("DSPy generated legal advice for question=%s", question)
-            except Exception:
+            except Exception as e:
                 logger.exception("DSPy generation failed: %s", e)
                 advice = None
 
@@ -107,7 +107,7 @@ class GraphRAGService:
         hits = res.get("hits") or []
         cypher = res.get("cypher", "")
         logger.info("LawService returned %d hits", len(hits))
-        return await self._build_response(question, hits, cypher)
+        return await self._build_response(question, hits, cypher=cypher)
 
     async def summarize_hits(self, question: str, hits: List[Dict[str, Any]]) -> Dict[str, Any]:
         logger.info(
