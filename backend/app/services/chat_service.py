@@ -146,15 +146,15 @@ class ChatService:
                 law = LawService(self.neo4j)
                 law_res = await law.query(request.message)
                 hits = law_res.get("hits") or []
+                rag = GraphRAGService(self.neo4j)
                 if hits:
-                    rag = GraphRAGService(self.neo4j)  # 可選：改成 GraphRAGService(self.neo4j, MILVUS_URI, EMBEDDING_MODEL)
                     rag_res = await rag.summarize_hits(request.message, hits)
-                    docs = rag_res.get("documents") or []
-                    law_context = "\n\n".join(
-                        d.get("content","")[:1200] for d in docs[:3] if d.get("content")
-                    )
                 else:
-                    need_flag = True  # 查不到法條，標記提示
+                    rag_res = await rag.search(request.message)
+                docs = rag_res.get("documents") or []
+                law_context = "\n\n".join(
+                    d.get("content", "")[:1200] for d in docs[:3] if d.get("content")
+                )
             except Exception as e:
                 logger.exception("Law retrieval failed: %s", e)
 
@@ -171,6 +171,8 @@ class ChatService:
             except Exception:
                 file_context = ""
 
+        need_flag = not law_context and not file_context
+
         # 組 Prompt（單一路徑，不要覆蓋 reply）
         base = "以下為使用者問題與相關內容，請優先根據提供的內容回答；若內容不足，再以一般常識補充並標註不確定性。請使用繁體中文。"
         sections = [f"[問題]\n{request.message}"]
@@ -181,7 +183,7 @@ class ChatService:
         prompt = base + "\n\n" + "\n\n".join(sections)
 
         # 若完全沒有 context 且 use_nlu 為真但查無法條，可給提示性回覆或直接一般回答
-        if not law_context and not file_context and use_nlu and need:
+        if need_flag and use_nlu:
             prompt = (
                 "查無可引用的法條內容，請根據一般常識先給出初步方向，並明確告知仍需確認相關條文；"
                 "回答使用繁體中文。\n\n" + prompt
@@ -209,6 +211,6 @@ class ChatService:
             "conversation_id": conv_id,
             "message_id": msg_id,
             "content": reply,
-            "need": need,
+            "need": need_flag,
         }
 

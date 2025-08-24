@@ -71,6 +71,8 @@ async def ws_chat(websocket: WebSocket):
                 # Automatic decision based on NLU
                 use_knowledge = intent != "general"
 
+            logger.info("CCCCCCCCCCCCCCCCCCC  use_knowledge=%s", use_knowledge)
+
             context = ""
             if use_knowledge:
                 # Step 2: Retrieve relevant legal context via LawService or RAG
@@ -104,6 +106,7 @@ async def ws_chat(websocket: WebSocket):
                     logger.exception("Law retrieval failed: %s", e)
                     context = ""
 
+            logger.info("Retrieved context for conversation_id=%s: %s", conv_id, context)
             # Construct prompt for LLM
             if context:
                 prompt = (

@@ -9,9 +9,12 @@ except Exception:
 
 # DSPy 可用就用，不可用就優雅退回
 try:
-    from dspy_service import dspy_service  # 你的根目錄 dspy_service.py
+    from app.services.dspy_service import ai_api as dspy_service  # type: ignore
 except Exception:
-    dspy_service = None
+    try:
+        from app.backup.dspy_service_backup import dspy_service  # type: ignore
+    except Exception:
+        dspy_service = None
 
 from app.services.law_service import LawService  # LLM 產生 Cypher + Neo4j 查詢
 
@@ -63,6 +66,8 @@ class GraphRAGService:
         return context
 
     async def _build_response(self, question: str, hits: List[Dict[str, Any]], cypher: str = "",) -> Dict[str, Any]:
+        logger.info("DSPy generated legal advice for question is running.")
+
         documents = [
             {
                 "statute_id": h.get("statute_id", ""),
@@ -77,19 +82,28 @@ class GraphRAGService:
         advice = None
         if dspy_service and context:
             try:
-                pred = dspy_service.generate_legal_advice(
-                    question=question,
-                    context=context,
-                    retrieved_docs=[d["content"] for d in documents if d["content"]],
-                )
-                advice = (
-                    pred.model_dump()
-                    if hasattr(pred, "model_dump")
-                    else pred.dict()
-                    if hasattr(pred, "dict")
-                    else pred
-                )
-                logger.info("DSPy generated legal advice for question=%s", question)
+                pred = None
+                if hasattr(dspy_service, "generate_legal_advice"):
+                    pred = dspy_service.generate_legal_advice(
+                        question=question,
+                        context=context,
+                        retrieved_docs=[d["content"] for d in documents if d["content"]],
+                    )
+                elif hasattr(dspy_service, "process_message"):
+                    pred = await dspy_service.process_message(
+                        session_id="graph_rag",
+                        text=f"{question}\n{context}",
+                    )
+
+                if pred is not None:
+                    advice = (
+                        pred.model_dump()
+                        if hasattr(pred, "model_dump")
+                        else pred.dict()
+                        if hasattr(pred, "dict")
+                        else pred
+                    )
+                    logger.info("DSPy generated legal advice for question=%s", question)
             except Exception as e:
                 logger.exception("DSPy generation failed: %s", e)
                 advice = None

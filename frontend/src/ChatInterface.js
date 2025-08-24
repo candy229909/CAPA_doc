@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Send, Plus, Menu, MessageSquare, Trash2, Edit3,
-  Check, X, File as FileIcon, Upload
+  Check, X, File as FileIcon, Upload, Download
 } from 'lucide-react';
 
 // ✅ 更新版本重點：
@@ -31,6 +31,7 @@ const ChatInterface = () => {
   const editInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const ws = useRef(null);
+  const fileUrlMap = useRef({});
 
   const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -167,13 +168,18 @@ const ChatInterface = () => {
       return;
     }
     setUploadError('');
-    const fileInfo = { id: Date.now(), file, name: file.name, size: file.size };
+    const url = URL.createObjectURL(file);
+    const fileInfo = { id: Date.now(), file, name: file.name, size: file.size, url };
     setUploadedFiles(prev => [...prev, fileInfo]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const removeUploadedFile = (fileId) => {
-    setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+    setUploadedFiles(prev => {
+      const target = prev.find(f => f.id === fileId);
+      if (target) URL.revokeObjectURL(target.url);
+      return prev.filter(f => f.id !== fileId);
+    });
   };
 
   // 實際丟到後端 /api/upload-document
@@ -247,6 +253,7 @@ const ChatInterface = () => {
         try {
           setIsUploading(true);
           await uploadFileToServer(fileInfo, convId);
+          fileUrlMap.current[fileInfo.name] = fileInfo.url;
         } catch (error) {
           console.error(`檔案 ${fileInfo.name} 上傳失敗:`, error);
           setUploadError(`檔案 ${fileInfo.name} 上傳失敗: ${error.message}`);
@@ -364,6 +371,7 @@ const ChatInterface = () => {
       return '';
     }
   };
+
   const formatFileSize = (bytes) => {
     if (!bytes && bytes !== 0) return '';
     if (bytes === 0) return '0 Bytes';
@@ -371,7 +379,25 @@ const ChatInterface = () => {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
-  const isFileMessage = (msg) => typeof msg?.content === 'string' && msg.content.startsWith('📎');
+
+  const extractFileName = (content) => {
+    const m = /^📎\s*已上傳檔案:\s*([^\n]+)/.exec(content || '');
+    return m ? m[1].trim() : (content || '').replace(/^📎\s*/, '').split('\n')[0];
+  };
+  const getDownloadUrl = (msg) => {
+    const name = msg.file_info?.filename || extractFileName(msg.content);
+    if (fileUrlMap.current[name]) return fileUrlMap.current[name];
+    const fileId = msg.file_info?.file_id;
+    if (fileId) return `${API_URL}/api/download-document/${fileId}`;
+    const parts = (msg.content || '').split('檔案內容:\n');
+    if (parts.length > 1) {
+      const blobUrl = URL.createObjectURL(new Blob([parts[1]], { type: 'text/plain' }));
+      fileUrlMap.current[name] = blobUrl;
+      return blobUrl;
+    }
+    return null;
+  };
+  const isFileMessage = (msg) => !!msg?.file_info || (typeof msg?.content === 'string' && msg.content.startsWith('📎'));
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
@@ -447,6 +473,7 @@ const ChatInterface = () => {
                 <FileIcon size={16} />
                 <span className="flex-1 text-sm">{fileInfo.name}</span>
                 <span className="text-xs text-gray-400">{formatFileSize(fileInfo.size)}</span>
+                <a href={fileInfo.url} download={fileInfo.name} className="text-green-400 hover:text-green-300"><Download size={14} /></a>
                 <button onClick={() => removeUploadedFile(fileInfo.id)} className="text-red-400 hover:text-red-300"><X size={14} /></button>
               </div>
             ))}
@@ -479,10 +506,16 @@ const ChatInterface = () => {
               // 處理訊息內容，包括特殊 [RAG] 標註
               let contentElement;
               if (isFileMessage(msg)) {
+                const fileName = msg.file_info?.filename || extractFileName(msg.content);
+                const url = getDownloadUrl(msg);
                 contentElement = (
                   <div className="flex items-center gap-2">
                     <FileIcon size={16} />
-                    <span className="underline">{msg.content.replace('📎 上傳檔案：', '')}</span>
+                    {url ? (
+                      <a href={url} download={fileName} className="underline">{fileName}</a>
+                    ) : (
+                      <span className="underline">{fileName}</span>
+                    )}
                   </div>
                 );
               } else if (typeof msg.content === 'string' && msg.content.includes('[RAG]')) {

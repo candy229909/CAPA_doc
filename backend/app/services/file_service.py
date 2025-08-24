@@ -3,28 +3,22 @@ from fastapi import HTTPException, UploadFile
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
-import uuid, os, aiofiles, tempfile
+import uuid, os, tempfile
 
 from app.database.db_mongo import MongoDB
-from app.pdf_text_extrator import PDFTextExtractor
-
-try:
-    from docx import Document
-except Exception:
-    Document = None
-import docx2txt
+from app.file_to_markdown_json import FileToMarkdownJSON
 
 class FileService:
     def __init__(self, mongo):
         self.mongo = mongo
-        self.pdf_extractor = PDFTextExtractor(ocr_lang="chi_tra")
+        self.converter = FileToMarkdownJSON()
 
     async def handle_upload(self, file: UploadFile, conversation_id: Optional[str]) -> dict:
         if not file.filename:
             raise HTTPException(status_code=400, detail="檔案名稱不能為空")
 
         ext = Path(file.filename).suffix.lower()
-        allowed_exts = {".doc", ".docx", ".pdf", ".txt", ".md"}
+        allowed_exts = {".doc", ".docx", ".pdf", ".txt", ".md", ".csv"}
         if ext not in allowed_exts:
             raise HTTPException(status_code=400, detail=f"不支援格式，僅支援：{', '.join(sorted(allowed_exts))}")
 
@@ -34,6 +28,14 @@ class FileService:
             raise HTTPException(status_code=400, detail="檔案內容為空")
         if size > 20 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="檔案大小不能超過 20MB")
+        
+        # 儲存原始檔案以供下載
+        file_id = str(uuid.uuid4())
+        upload_dir = Path("uploaded_files")
+        upload_dir.mkdir(exist_ok=True)
+        stored_path = upload_dir / f"{file_id}__{file.filename}"
+        with open(stored_path, "wb") as f:
+            f.write(content)
 
          # 先確認或建立對話 ID
         if conversation_id:
@@ -70,6 +72,7 @@ class FileService:
                 "role": "user",
                 "timestamp": datetime.utcnow(),
                 "file_info": {
+                    "file_id": file_id,
                     "filename": file.filename,
                     "file_type": "document",
                     "file_size": size,
@@ -85,53 +88,27 @@ class FileService:
             "file_content": extracted,
             "filename": file.filename,
             "conversation_id": conversation_id,
+            "file_id": file_id,
         }
 
     async def _extract_text(self, content_bytes: bytes, ext: str) -> str:
         if ext in (".txt", ".md"):
             return content_bytes.decode("utf-8", errors="ignore")
 
-        if ext in (".docx", ".doc"):
-            import os, tempfile
-            tmp_path = None
-            try:
-                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-                    tmp.write(content_bytes); tmp.flush()
-                    tmp_path = tmp.name
-                # 先 docx2txt
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(content_bytes)
+                tmp.flush()
+                tmp_path = tmp.name
+            data = self.converter.convert(tmp_path)
+            return data.get("markdown", "").strip()
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
                 try:
-                    txt = docx2txt.process(tmp_path) or ""
-                except Exception:
-                    txt = ""
-                # 再嘗試 python-docx（前一個失敗或抽得太少時）
-                if not txt and Document is not None:
-                    try:
-                        doc = Document(tmp_path)
-                        txt = "\n".join(p.text for p in doc.paragraphs)
-                    except Exception:
-                        pass
-                return (txt or "").strip()
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except Exception:
-                        pass
-
-        if ext == ".pdf":
-            try:
-                text, *_ = await self.pdf_extractor.extract_text(content_bytes)
-                return (text or "").strip()
-            except Exception:
-                try:
-                    import pypdf
-                    from io import BytesIO
-                    reader = pypdf.PdfReader(BytesIO(content_bytes))
-                    pages = [p.extract_text() or "" for p in reader.pages]
-                    return "\n".join(pages).strip()
+                    os.unlink(tmp_path)
                 except Exception:
                     pass
-        return ""
     
     def _chunk_text(self, text: str, max_chunk_chars: int = 900, overlap: int = 120) -> list[dict]:
         """

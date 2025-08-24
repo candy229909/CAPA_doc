@@ -89,8 +89,10 @@ class Neo4jDB:
         try:
             async with self.driver.session() as session:
                 result = await session.run(cypher, parameters=params or {})
-                records = await result.to_list()
-                return [r.data() for r in records]
+                records = []
+                async for r in result:
+                    records.append(r.data())
+                return records
         except Exception as e:
             print("[Neo4j] run_read_query error:", e)
             return []
