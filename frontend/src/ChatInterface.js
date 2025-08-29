@@ -129,7 +129,7 @@ const ChatInterface = () => {
   // 取得對話列表
   const fetchConversations = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/conversations`);
+      const res = await fetch(`${API_URL}/api/conversations/`);
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
       setConversations(list);
@@ -237,7 +237,7 @@ const ChatInterface = () => {
           : uploadedFiles.length > 0
           ? `文件分析: ${uploadedFiles[0].name}`
           : '新對話';
-        const res = await fetch(`${API_URL}/api/conversations`, {
+        const res = await fetch(`${API_URL}/api/conversations/`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title }),
@@ -297,7 +297,7 @@ const ChatInterface = () => {
   // 建立新對話
   const createNewConversation = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/conversations`, {
+      const res = await fetch(`${API_URL}/api/conversations/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: '新對話' }),

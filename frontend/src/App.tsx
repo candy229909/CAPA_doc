@@ -1,26 +1,22 @@
 import React from 'react';
-import logo from './logo.svg';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import ChatInterface from './ChatInterface';
+import TemplateFilterApp from './pages/TemplateFilterApp';
 import './App.css';
 
-function App() {
+export default function App() {
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
+    <BrowserRouter>
+      <div className="App">
+        <nav style={{padding:'8px 12px', borderBottom:'1px solid #eee', display:'flex', gap:'12px'}}>
+          <Link to="/">聊天</Link>
+          <Link to="/template-filler">模組填空</Link>
+        </nav>
+        <Routes>
+          <Route path="/" element={<ChatInterface />} />
+          <Route path="/template-filler" element={<TemplateFilterApp />} />
+        </Routes>
+      </div>
+    </BrowserRouter>
   );
 }
-
-export default App;

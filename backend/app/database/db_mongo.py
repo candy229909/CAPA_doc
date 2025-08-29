@@ -28,6 +28,12 @@ class MongoDB:
         self.prompts = None
         self.documents = None
     
+    
+    async def _ensure_ready(self):
+        # 若尚未初始化 collections，嘗試連線一次。
+        if self.conversations is None or self.messages is None:
+            await self.connect()
+
     async def connect(self):
         # 讓選擇伺服器超時短一點，方便重試
         self.client = AsyncIOMotorClient(self.uri, serverSelectionTimeoutMS=3000)
@@ -102,6 +108,7 @@ class MongoDB:
         return strip_id(conversations)
 
     async def update_conversation_title(self, conversation_id: str, title: str):
+        await self._ensure_ready()
         """更新指定對話的標題（同時刷新 updated_at）"""
         await self.conversations.update_one(
             {"id": conversation_id},
@@ -109,6 +116,7 @@ class MongoDB:
         )
 
     async def delete_conversation(self, conversation_id: str):
+        await self._ensure_ready()
         """刪除指定對話及其所有訊息"""
         await self.conversations.delete_one({"id": conversation_id})
         await self.messages.delete_many({"conversation_id": conversation_id})
@@ -131,6 +139,7 @@ class MongoDB:
         return await self.messages.count_documents({"conversation_id": conversation_id})
 
     async def update_conversation_timestamp(self, conversation_id: str):
+        await self._ensure_ready()
         """更新對話的最近更新時間為現在"""
         await self.conversations.update_one(
             {"id": conversation_id},

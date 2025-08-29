@@ -1,9 +1,17 @@
 # app/routes/conversation_router.py
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, Request, HTTPException
 from app.services.conversation_service import ConversationService
 from app.models import ConversationCreate
 
-router = APIRouter()
+async def _ensure_mongo(request: Request):
+    """Guarantee Mongo is connected/initialized before handling the endpoint."""
+    mongo = request.app.state.mongo
+    # connect() is idempotent; if already connected it returns quickly
+    await mongo.connect()
+
+
+
+router = APIRouter(dependencies=[Depends(_ensure_mongo)])
 
 @router.get("/")
 async def list_conversations(request: Request):

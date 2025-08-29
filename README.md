@@ -575,7 +575,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 👥 Team
 - **Developer**: 林芳琦 (mo85ang@gmail.com)
 - **Developer**: 洪啟勝 (oliver@homed.care)
-- **Developer**: 陳建瑜 (jjamie.ccy@gmail.com)
+- **Developer**: 黃郁翔 (forevermmay25@gmail.com)
 
 ---
 
