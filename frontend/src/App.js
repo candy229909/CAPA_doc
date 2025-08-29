@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
 import ChatInterface from './ChatInterface';
-import TemplateFilterApp from './pages/TemplateFilterApp';
+import TemplateFilterApp from "./pages/TemplateFilterApp";
 import './App.css';
 
 function App() {

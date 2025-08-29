@@ -98,15 +98,17 @@ class FormatImitator:
 
         structure_lines = []
         for idx, (k, v) in enumerate(pairs, start=1):
-            key_ph = f"{{{{key{idx}}}}}"
-            val_ph = f"{{{{value{idx}}}}}"
+            key_ph = f"{{key{idx}}}"
+            val_ph = f"{{value{idx}}}"
             ln = (detected_tpl or "{key}: {value}").replace("{key}", key_ph).replace("{value}", val_ph)
             structure_lines.append(ln)
 
         structure = "\n\n".join(structure_lines)
-        data = [{{"key": k, "value": v}} for (k, v) in pairs]
-        return {{"structure": structure, "data": data}}
 
+        data = [{"key": k, "value": v} for (k, v) in pairs]
+
+        return {"structure": structure, "data": data}
+    
     @staticmethod
     def render(structure: str, mapping: Dict[str, str]) -> str:
         def repl(m):

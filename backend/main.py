@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(nlu_router,          prefix="/api/nlu", tags=["nlu"])
     app.include_router(rag_router,          prefix="/api/rag", tags=["rag"])
     app.include_router(ethics_router,       prefix="/api/ethics", tags=["ethics"])
+    app.include_router(filter_public_router)
     app.include_router(template_filter_router, prefix="/api/template_filter", tags=["template"])
 
     @app.get("/")

@@ -19,12 +19,8 @@ except Exception:
 try:
     from app.services.dspy_service import ai_api as dspy_service  # type: ignore
 except Exception as e:
-    try:
-        logger.warning("DSPy service import failed: %s", e)
-        from app.backup.dspy_service_backup import dspy_service  # type: ignore
-    except Exception as e:
-        logger.warning("Backup DSPy service import failed: %s", e)
-        dspy_service = None
+    logger.warning("Backup DSPy service import failed: %s", e)
+    dspy_service = None
 
 from app.services.law_service import LawService  # LLM 產生 Cypher + Neo4j 查詢
 

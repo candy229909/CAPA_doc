@@ -20,3 +20,4 @@ pydocx
 python-docx
 faiss-cpu
 pymilvus==2.6.0
+spacy==3.7.4

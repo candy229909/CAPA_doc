@@ -1,371 +1,318 @@
+import React, { useEffect, useRef, useState } from "react";
+import { Upload, Send, HelpCircle, Database, FileDown, Wifi } from "lucide-react";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Upload, Database, Send, FileText, CheckCircle2, Circle, AlertTriangle, Loader2, RefreshCw, FileDown, Bot, HelpCircle, ListChecks, MessageSquarePlus, PlugZap } from "lucide-react";
+/** 從環境變數取得後端 API 位址（例：http://localhost:8000） */
+const API_BASE = (process.env.REACT_APP_API_URL || "http://localhost:8000").replace(/\/+$/, "");
+const api = (p) => `${API_BASE}${p.startsWith("/") ? p : "/" + p}`;
+const wsBase = API_BASE.replace(/^http/i, "ws"); // http->ws, https->wss
 
-/**
- * Template-Filler UI (React)
- * -------------------------------------------------------------
- * 支援：
- * 1) 上傳文件 + 模組名 → POST /api/file_data → 建立模組
- * 2) 讀取現有模組、顯示 structure / data / 進度 → GET /api/modules, /api/modules/{id}
- * 3) 使用者輸入訊息 → WebSocket /ws/fill?moduleId= → 後端即時解析填空
- * 4) 一鍵逐題詢問：ask_next / ask_key
- * 5) 匯出 → GET /api/modules/{id}/export
- */
+/** 依 moduleId 組兩個可用的 WS URL（主/備援） */
+const wsUrlsFor = (moduleId) => [
+  `${wsBase}/ws/fill?moduleId=${encodeURIComponent(moduleId)}`,                 // 主要（你後端 txt）
+  `${wsBase}/api/template_filter/ws/fill?moduleId=${encodeURIComponent(moduleId)}`, // 備援（若你有掛）
+];
 
-// The file name is TemplateFilterApp.jsx.  Export a component with a matching
-// name for clarity.  Previously the function was named TemplateFillerApp,
-// which could cause confusion.
 export default function TemplateFilterApp() {
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white text-gray-900">
-      <div className="mx-auto max-w-6xl px-4 py-8">
-        <header className="mb-6 flex items-center justify-between">
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            <FileText className="h-6 w-6" /> 模組填空助手
-          </h1>
-          <div className="text-sm text-gray-500 flex items-center gap-2">
-            <PlugIndicator /> 支援 WebSocket 流式/逐題詢問 + 匯出
-          </div>
-        </header>
-
-        <div className="grid gap-6 md:grid-cols-3">
-          <section className="md:col-span-1 space-y-6">
-            <ModuleUploader />
-            <ModulePicker />
-          </section>
-
-          <section className="md:col-span-2 space-y-6">
-            <TemplateOverview />
-            <ChatFiller />
-          </section>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** --- 簡易全域狀態 bus --- */
-const bus = {
-  listeners: new Set(),
-  state: {
-    modules: [],
-    selectedModuleId: null,
-    moduleDetail: null,
-    loadingModule: false,
-    socket: null,
-    socketReady: false,
-    missingKeys: [],
-  },
-  subscribe(fn) {
-    this.listeners.add(fn);
-    fn(this.state);
-    return () => this.listeners.delete(fn);
-  },
-  set(patch) {
-    this.state = { ...this.state, ...patch };
-    this.listeners.forEach((fn) => fn(this.state));
-  },
-};
-
-function useBusState() {
-  const [s, setS] = useState(bus.state);
-  useEffect(() => bus.subscribe(setS), []);
-  return s;
-}
-
-/** 模組上傳 */
-function ModuleUploader() {
-  const [file, setFile] = useState(null);
+  // 左側：上傳/列表
   const [moduleName, setModuleName] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
+  const [file, setFile] = useState(null);
+  const [modules, setModules] = useState([]);
+  const [selectedModuleId, setSelectedModuleId] = useState(null);
 
-  const onFileChange = (e) => setFile(e.target.files?.[0] ?? null);
+  // 右側：目前模組細節 + 對話
+  const [current, setCurrent] = useState(null); // {id,name,progress,...}
+  const [messages, setMessages] = useState([]); // [{id,role,content}]
+  const [input, setInput] = useState("");
+  const [banner, setBanner] = useState(null);
 
-  const handleUpload = async () => {
+  // WS
+  const wsRef = useRef(null);
+  const [socketReady, setSocketReady] = useState(false);
+  const keepAliveRef = useRef(null);
+
+  const pushMsg = (role, content) =>
+    setMessages((prev) => [...prev, { id: Date.now() + Math.random(), role, content }]);
+
+  /** 讀取模組列表 */
+  const refreshModules = async () => {
     try {
-      setError("");
-      if (!file) throw new Error("請選擇檔案");
-      if (!moduleName.trim()) throw new Error("請輸入模組名稱");
-      setSubmitting(true);
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("moduleName", moduleName.trim());
-      const res = await fetch("/api/file_data", { method: "POST", body: fd });
-      if (!res.ok) {
-        // Attempt to extract error details if available
-        let msg = `上傳失敗：${res.status}`;
-        try {
-          const err = await res.json();
-          if (err?.detail) msg = err.detail;
-        } catch {}
-        throw new Error(msg);
-      }
-      let json;
-      try {
-        json = await res.json();
-      } catch {
-        json = null;
-      }
-      if (json && json.moduleId) {
-        await refreshModules(json.moduleId);
-      } else {
-        await refreshModules();
-      }
-      setFile(null);
-      setModuleName("");
+      const res = await fetch(api("/api/modules"));
+      if (!res.ok) throw new Error(`載入模組失敗 (${res.status})`);
+      const data = await res.json();
+      setModules(Array.isArray(data) ? data : []);
     } catch (e) {
-      setError(e.message || "上傳失敗");
-    } finally {
-      setSubmitting(false);
+      setModules([]);
+      setBanner({ type: "error", text: e.message || "載入模組失敗" });
+    }
+  };
+  useEffect(() => { refreshModules(); }, []);
+
+  /** 讀取單一模組細節，並連線 WS */
+  const loadModuleDetail = async (moduleId) => {
+    try {
+      const res = await fetch(api(`/api/modules/${moduleId}`));
+      if (!res.ok) throw new Error(`讀取模組失敗 (${res.status})`);
+      const info = await res.json();
+      setCurrent(info);
+      setSelectedModuleId(moduleId);
+    } catch (e) {
+      setBanner({ type: "error", text: e.message || "讀取模組失敗" });
     }
   };
 
-  return (
-    <div className="rounded-2xl border bg-white p-4 shadow-sm">
-      <h2 className="mb-2 text-lg font-medium flex items-center gap-2"><Upload className="h-5 w-5" /> 上傳文件並建立模組</h2>
-      <input className="mb-2 w-full rounded-xl border px-3 py-2 text-sm" placeholder="模組名稱" value={moduleName} onChange={(e) => setModuleName(e.target.value)} />
-      <input type="file" onChange={onFileChange} className="mb-2" />
-      {error && <div className="text-red-500 text-sm mb-2">{error}</div>}
-      <button onClick={handleUpload} disabled={submitting} className="rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white">{submitting ? "處理中..." : "上傳並建立"}</button>
-    </div>
-  );
-}
+  /** 連線 WS（主要路徑失敗→自動改用備援） */
+  const connectWS = (moduleId) => {
+    // 關閉舊連線
+    try { wsRef.current?.close(); } catch {}
+    setSocketReady(false);
+    if (!moduleId) return;
 
-/** 模組選擇 */
-function ModulePicker() {
-  const { modules, selectedModuleId } = useBusState();
-  useEffect(() => { refreshModules(); }, []);
-  return (
-    <div className="rounded-2xl border bg-white p-4 shadow-sm">
-      <h2 className="mb-2 text-lg font-medium flex items-center gap-2"><Database className="h-5 w-5" /> 現有模組</h2>
-      <div className="space-y-2 max-h-60 overflow-auto">
-        {modules.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => loadModuleDetail(m.id)}
-            className={`block w-full rounded-xl border px-3 py-2 text-sm text-left ${selectedModuleId === m.id ? "border-indigo-500 bg-indigo-50" : "hover:bg-gray-50"}`}
-          >
-            {m.name}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+    const urls = wsUrlsFor(moduleId);
+    let i = 0;
+    const open = () => {
+      const ws = new WebSocket(urls[i]);
+      wsRef.current = ws;
 
-/** 模組概覽 */
-function TemplateOverview() {
-  const { moduleDetail } = useBusState();
-  if (!moduleDetail) return <div className="rounded-2xl border bg-white p-4 shadow-sm">請先選擇模組</div>;
-  const fields = moduleDetail.data ?? [];
-  const filled = fields.filter(f => (f.value ?? "").toString().trim()!=="").length;
-  const pct = fields.length? Math.round(filled/fields.length*100):0;
-  return (
-    <div className="rounded-2xl border bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-medium flex items-center gap-2"><ListChecks className="h-5 w-5" /> 模組概覽</h2>
-        <span className="text-sm text-gray-500">{filled}/{fields.length}（{pct}%）</span>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        {fields.map((f,idx)=>{
-          const ok = (f.value ?? "").toString().trim()!=="";
-          return (
-            <div key={idx} className="rounded-lg border px-3 py-2 text-sm flex items-center justify-between">
-              <div className="truncate">{f.key}</div>
-              {ok ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <AlertTriangle className="h-4 w-4 text-amber-600" />}
-            </div>
-          );
-        })}
-      </div>
-      <div className="mt-3">
-        <a
-          className="inline-flex items-center gap-2 text-sm text-indigo-600 hover:underline"
-          href={`/api/modules/${moduleDetail.moduleId}/export`}
-        >
-          <FileDown className="h-4 w-4" /> 匯出
-        </a>
-      </div>
-    </div>
-  );
-}
+      ws.onopen = () => {
+        setSocketReady(true);
+        // 保活，避免閒置被關
+        keepAliveRef.current = setInterval(() => {
+          try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+        }, 15000);
+        // 要求後端推送缺漏鍵狀態（若有支援）
+        try { ws.send(JSON.stringify({ type: "status" })); } catch {}
+      };
 
-/** 對話填空 */
-function ChatFiller() {
-  const listRef = useRef(null);
-  const { selectedModuleId, moduleDetail, socketReady, missingKeys } = useBusState();
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [asking, setAsking] = useState(false);
-  const [autoAsk, setAutoAsk] = useState(true);
-
-  // 計算尚未填欄位（前端 fallback）
-  const computedMissing = useMemo(()=>{
-    const fields = moduleDetail?.data ?? [];
-    return fields.filter(f => (f.value ?? "").toString().trim()==="").map(f=>f.key);
-  }, [moduleDetail]);
-
-  useEffect(()=>{
-    if (!selectedModuleId) return;
-    // 建 ws url
-    const loc = window.location;
-    const wsProto = loc.protocol === "https:" ? "wss" : "ws";
-    const wsUrl = `${wsProto}://${loc.host}/ws/fill?moduleId=${selectedModuleId}`;
-    const ws = new WebSocket(wsUrl);
-    bus.set({ socket: ws, socketReady: false });
-
-    let keepAlive = null;
-    ws.onopen = () => { 
-      bus.set({ socketReady: true });
-      keepAlive = setInterval(()=>{ try{ ws.send(JSON.stringify({type:"ping"})); }catch{} }, 20000);
-      try { ws.send(JSON.stringify({ type:'status', moduleId: selectedModuleId })); } catch {}
-    };
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        switch (msg.type) {
-          case "message": setMessages(prev=>[...prev, { role: msg.role || "assistant", content: msg.content }]); break;
-          case "module": bus.set({ moduleDetail: msg.moduleDetail }); break;
-          case "missing": bus.set({ missingKeys: msg.keys || [] }); break;
-          case "ask": {
-            // If the server asks a specific key, show a message prompting the user to provide it.
-            const prompt = msg.prompt || `請提供「${msg.key}」的資訊。`;
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: 'assistant',
-                content: `【待填欄位】${msg.key}\n${prompt}`,
-              },
-            ]);
-            break;
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          switch (msg.type) {
+            case "message":
+              if (msg.role && msg.content) pushMsg(msg.role, msg.content);
+              break;
+            case "ask":
+              // 後端逐題詢問提示
+              pushMsg("assistant", `【待填欄位】${msg.key}\n${msg.prompt || `請提供「${msg.key}」的資訊。`}`);
+              break;
+            case "module":
+              if (msg.moduleDetail) setCurrent(msg.moduleDetail);
+              break;
+            case "missing":
+              // 可在 UI 顯示缺漏鍵清單（如果你要）
+              break;
+            default:
+              // 靜默忽略其他型別
+              break;
           }
-          default: break;
+        } catch {
+          // 有些情況後端可能傳純文字
+          pushMsg("assistant", ev.data);
         }
-      } catch {}
+      };
+
+      ws.onclose = () => {
+        setSocketReady(false);
+        if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
+        // 第一次失敗嘗試備援
+        if (i === 0) { i = 1; open(); }
+      };
+
+      ws.onerror = () => { /* 交給 onclose 做 fallback */ };
     };
-    ws.onclose = () => {
-      bus.set({ socket: null, socketReady: false });
-      if (keepAlive) clearInterval(keepAlive);
+
+    open();
+  };
+
+  /** 當選擇模組改變 → 重新連線 WS */
+  useEffect(() => {
+    if (!selectedModuleId) return;
+    connectWS(selectedModuleId);
+    return () => {
+      try { wsRef.current?.close(); } catch {}
+      if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
     };
-    return () => { try{ ws.close(); }catch{}; if (keepAlive) clearInterval(keepAlive); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedModuleId]);
 
-  // 自動追問模式
-  useEffect(() => {
-    if (!autoAsk || asking) return;
-    const keys = (missingKeys.length? missingKeys : computedMissing);
-    if (!keys.length) return;
-    askNext(keys[0]);
-  }, [autoAsk, missingKeys, computedMissing]);
+  /** 上傳並建立模組 */
+  const handleUpload = async () => {
+    if (!moduleName.trim()) return setBanner({ type: "error", text: "請輸入模組名稱" });
+    if (!file) return setBanner({ type: "error", text: "請選擇檔案（.txt / .docx）" });
 
-  // 捲動到底
-  useEffect(()=>{ listRef.current?.scrollTo({ top:listRef.current.scrollHeight, behavior:"smooth" }); }, [messages]);
+    const fd = new FormData();
+    fd.append("moduleName", moduleName.trim());
+    fd.append("file", file);
 
-  const sendMessage = () => {
-    const text = input.trim();
-    if (!text) return;
-    setInput("");
-    setMessages(prev=>[...prev, { role:'user', content: text }]);
-    if (bus.state.socket) {
-      try { bus.state.socket.send(JSON.stringify({ type:'user_message', content: text })); } catch {}
+    try {
+      const res = await fetch(api("/api/file_data"), { method: "POST", body: fd });
+      if (!res.ok) {
+        let msg = `上傳失敗 (${res.status})`;
+        try { const j = await res.json(); if (j?.detail) msg = j.detail; } catch {}
+        throw new Error(msg);
+      }
+      const json = await res.json(); // { moduleId, structure, data }
+      setModuleName(""); setFile(null);
+      pushMsg("system", "✅ 模組建立完成");
+
+      await refreshModules();
+      if (json?.moduleId) {
+        await loadModuleDetail(json.moduleId); // 會觸發 selectedModuleId → connectWS
+      }
+    } catch (e) {
+      setBanner({ type: "error", text: e.message || "上傳失敗" });
     }
   };
 
-  const askNext = async (keyFromList) => {
-    const nextKey = keyFromList ?? (missingKeys[0] || computedMissing[0]);
-    if (!nextKey) return;
-    setAsking(true);
-    const payload = { type:'ask_key', moduleId: selectedModuleId, key: nextKey };
-    try { bus.state.socket?.send(JSON.stringify(payload)); } catch {}
-    setTimeout(()=> setAsking(false), 400); // 小延遲避免狂按
+  /** 送出（自由輸入，後端會嘗試抽取 key:value） */
+  const sendMessage = async () => {
+    if (!socketReady || !wsRef.current || !selectedModuleId) return;
+    const content = (input || "").trim();
+    if (!content) return;
+    try {
+      wsRef.current.send(JSON.stringify({ type: "user_message", content }));
+      pushMsg("user", content);
+      setInput("");
+    } catch (e) {
+      setBanner({ type: "error", text: "WS 發送失敗" });
+    }
   };
 
-  const rows = (moduleDetail?.data ?? []);
+  /** 逐題詢問（請後端詢問下一個缺漏鍵） */
+  const askNext = async () => {
+    if (!socketReady || !wsRef.current || !selectedModuleId) return;
+    pushMsg("system", "🔎 逐題詢問…");
+    try {
+      wsRef.current.send(JSON.stringify({ type: "ask_next" }));
+    } catch (e) {
+      setBanner({ type: "error", text: "WS 發送失敗" });
+    }
+  };
+
   return (
-    <div className="rounded-2xl border bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-medium flex items-center gap-2"><Bot className="h-5 w-5" /> 填空對話</h2>
-        <label className="text-sm flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={autoAsk} onChange={e=>setAutoAsk(e.target.checked)} />
-          自動逐題詢問
-        </label>
+    <div className="p-4">
+      <div className="text-xl font-semibold mb-4 flex items-center gap-2">
+        <span role="img" aria-label="doc">📄</span> 模組填空助手
+        <div className="ml-auto text-sm text-gray-500 flex items-center gap-2">
+          <Wifi size={14} />
+          {socketReady ? "已連線 WebSocket" : "未連線"}
+        </div>
       </div>
 
-      <div ref={listRef} className="h-60 overflow-auto rounded-xl border p-3 text-sm space-y-2 bg-gray-50">
-        {messages.map((m,i)=>(
-          <div key={i} className={m.role==='user'?'text-right':''}>
-            <div
-              className={`inline-block rounded-xl px-3 py-2 ${m.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-white border'}`}
-            >
-              {m.content}
+      {banner && (
+        <div className={`mb-3 rounded px-3 py-2 text-sm ${banner.type === "error" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"}`}>
+          {banner.text}
+        </div>
+      )}
+
+      <div className="grid grid-cols-12 gap-4">
+        {/* 左：上傳 + 模組列表 */}
+        <div className="col-span-4 space-y-4">
+          <div className="border rounded-lg p-4">
+            <div className="font-medium mb-2">上傳文件並建立模組</div>
+            <input
+              placeholder="模組名稱"
+              value={moduleName}
+              onChange={(e) => setModuleName(e.target.value)}
+              className="w-full border rounded px-2 py-1 mb-2"
+            />
+            <div className="flex items-center gap-2 mb-2">
+              <label className="border rounded px-2 py-1 cursor-pointer bg-gray-50">
+                選擇檔案
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".txt,.doc,.docx"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                />
+              </label>
+              <div className="text-sm text-gray-600 truncate">{file?.name || "尚未選擇"}</div>
+            </div>
+            <button onClick={handleUpload} className="px-3 py-2 rounded bg-indigo-600 text-white inline-flex items-center gap-1">
+              <Upload size={16} /> 上傳並建立
+            </button>
+          </div>
+
+          <div className="border rounded-lg p-4">
+            <div className="font-medium mb-2 flex items-center gap-2">
+              <Database size={16} /> 現有模組
+            </div>
+            <div className="space-y-2 max-h-[360px] overflow-auto">
+              {modules.length === 0 && <div className="text-sm text-gray-500">尚無模組</div>}
+              {modules.map((m) => (
+                <div
+                  key={m.id}
+                  className={`p-2 border rounded cursor-pointer ${selectedModuleId === m.id ? "bg-indigo-50 border-indigo-300" : "hover:bg-gray-50"}`}
+                  onClick={() => loadModuleDetail(m.id)}
+                >
+                  <div className="text-sm font-medium truncate">{m.name || m.title || m.id}</div>
+                  {typeof m.progress === "number" && (
+                    <div className="text-xs text-gray-500">完成度：{Math.round(m.progress * 100)}%</div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
-        ))}
-      </div>
+        </div>
 
-      <div className="mt-3 flex gap-2">
-        <input className="flex-1 rounded-xl border px-3 py-2 text-sm" placeholder="輸入訊息，例如：日期: 2025-08-30" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') sendMessage(); }} />
-        <button onClick={sendMessage} className="rounded-xl bg-indigo-600 px-3 py-2 text-sm text-white inline-flex items-center gap-1"><Send className="h-4 w-4" /> 送出</button>
-        <button onClick={()=>askNext()} disabled={asking} className="rounded-xl bg-amber-600 px-3 py-2 text-sm text-white inline-flex items-center gap-1"><HelpCircle className="h-4 w-4" /> 逐題詢問</button>
-      </div>
+        {/* 右：對話區 */}
+        <div className="col-span-8 space-y-4">
+          <div className="border rounded-lg p-4">
+            <div className="font-medium mb-2">{current ? `模組：${current.name || current.id}` : "請先選擇模組"}</div>
+            {current && (
+              <div className="mb-2 text-sm text-gray-600">
+                {typeof current.progress === "number" && <>完成度：{Math.round(current.progress * 100)}%</>}
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(api(`/api/modules/${current.id}/export`));
+                      if (!res.ok) throw new Error(`匯出失敗 (${res.status})`);
+                      const blob = await res.blob();
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url; a.download = `${current?.name || "module"}.txt`; a.click();
+                      URL.revokeObjectURL(url);
+                    } catch (e) {
+                      setBanner({ type: "error", text: e.message || "匯出失敗" });
+                    }
+                  }}
+                  className="ml-2 px-2 py-1 text-sm rounded bg-gray-200 hover:bg-gray-300 inline-flex items-center gap-1"
+                >
+                  <FileDown size={14} /> 匯出
+                </button>
+              </div>
+            )}
 
-      <div className="mt-4">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">目前欄位</h3>
-        <div className="grid grid-cols-2 gap-2">
-          {rows.map((kv, i)=>(
-            <div key={i} className="rounded-lg border bg-white px-3 py-2 text-sm">
-              <div className="font-medium">{kv.key}</div>
-              <div className="text-gray-600 whitespace-pre-wrap">{kv.value || <span className="italic text-gray-400">（尚未填寫）</span>}</div>
+            <div className="h-64 border rounded p-2 overflow-auto bg-white">
+              {messages.length === 0 && (
+                <div className="text-gray-400 text-sm">（等待操作… 可按「逐題詢問」或直接輸入「欄位: 值」）</div>
+              )}
+              {messages.map((m) => (
+                <div key={m.id} className={`mb-1 text-sm ${m.role === "user" ? "text-right" : "text-left"}`}>
+                  <span className={`inline-block px-2 py-1 rounded ${m.role === "user" ? "bg-indigo-600 text-white" : "bg-gray-100"}`}>
+                    {m.content}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
+
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                placeholder="輸入：『欄位名: 值』或一般描述"
+                className="flex-1 border rounded px-2 py-2"
+              />
+              <button onClick={sendMessage} disabled={!socketReady || !selectedModuleId || !input.trim()} className="px-3 py-2 rounded bg-indigo-600 text-white inline-flex items-center gap-1">
+                <Send size={16} /> 送出
+              </button>
+              <button onClick={askNext} disabled={!socketReady || !selectedModuleId} className="px-3 py-2 rounded bg-orange-500 text-white inline-flex items-center gap-1">
+                <HelpCircle size={16} /> 逐題詢問
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
   );
-}
-
-/** 小圖示：顯示 WS 連線狀態 */
-function PlugIndicator() {
-  const { socketReady } = useBusState();
-  return (
-    <span className="inline-flex items-center gap-1">{socketReady ? <PlugZap className="h-4 w-4" /> : <Loader2 className="h-4 w-4 animate-spin" />} {socketReady ? "已連線" : "連線中…"}</span>
-  );
-}
-
-// ---- helpers for API ----
-async function refreshModules(selectId) {
-  try {
-    const res = await fetch("/api/modules");
-    if (!res.ok) {
-      // If the server returns a non‑2xx status, do not attempt to parse JSON.  It might be an HTML error page.
-      console.error('Failed to load modules', res.status);
-      bus.set({ modules: [] });
-      return;
-    }
-    const items = await res.json();
-    bus.set({ modules: Array.isArray(items) ? items : [] });
-    if (selectId) {
-      await loadModuleDetail(selectId);
-    }
-  } catch (e) {
-    console.error('Error loading modules', e);
-    bus.set({ modules: [] });
-  }
-}
-
-async function loadModuleDetail(id) {
-  try {
-    const res = await fetch(`/api/modules/${id}`);
-    if (!res.ok) {
-      console.error('Failed to load module detail', res.status);
-      bus.set({ selectedModuleId: id, moduleDetail: null });
-      return;
-    }
-    const detail = await res.json();
-    bus.set({ selectedModuleId: id, moduleDetail: detail });
-  } catch (e) {
-    console.error('Error loading module detail', e);
-    bus.set({ selectedModuleId: id, moduleDetail: null });
-  }
 }
