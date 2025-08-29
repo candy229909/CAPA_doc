@@ -150,12 +150,13 @@ async def ws_chat(websocket: WebSocket):
                 logger.exception("Failed to save assistant message: %s", e)
 
             # Log interaction to Neo4j if available
+            """ No need to implement for now, save conversation to neo4j DB
             if hasattr(svc.neo4j, "save_interaction"):
                 try:
                     await svc.neo4j.save_interaction(conv_id, user_message, reply)
                 except Exception:
                     pass
-
+            """
             # Step 5: Send final answer to client
             await websocket.send_json({
                 "status": "final",

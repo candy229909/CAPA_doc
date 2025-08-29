@@ -80,6 +80,7 @@ class GraphRAGService:
         context = "\n\n".join(d["content"][:1200] for d in documents[:3] if d["content"])
 
         advice = None
+        logger.info(f"This is rag_service and the context is {context} and dspy_service {dspy_service}")
         if dspy_service and context:
             try:
                 pred = None

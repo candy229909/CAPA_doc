@@ -68,21 +68,24 @@ class Neo4jDB:
 
     async def save_interaction(self, conversation_id: str, user_message: str, ai_response: str):
         """儲存一次對話問答到 Neo4j 圖形資料庫"""
+        """ No need to implement for now, save conversation to neo4j DB
         try:
             async with self.driver.session() as session:
                 await session.run(
-                    """
+                    """ """
                     MERGE (c:Conversation {id: $conversation_id})
                     CREATE (u:Message {content: $user_message, role: 'user', timestamp: datetime()})
                     CREATE (a:Message {content: $ai_response, role: 'assistant', timestamp: datetime()})
                     CREATE (c)-[:CONTAINS]->(u)
                     CREATE (c)-[:CONTAINS]->(a)
                     CREATE (u)-[:FOLLOWED_BY]->(a)
-                    """,
+                    """ """,
                     conversation_id=conversation_id, user_message=user_message, ai_response=ai_response
                 )
         except Exception as e:
             print(f"Neo4j error: {e}")
+        """
+        return
 
     async def run_read_query(self, cypher: str, params: Dict[str, Any] | None = None):
         """執行讀取類型的 Cypher 查詢並返回結果資料"""

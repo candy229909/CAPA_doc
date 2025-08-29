@@ -201,12 +201,14 @@ class ChatService:
 
         msg_id = await self._save_message(conv_id, "assistant", reply)
 
+        """ No need to implement for now, save conversation to neo4j DB
         if hasattr(self.neo4j, "save_interaction"):
             try:
                 await self.neo4j.save_interaction(conv_id, request.message, reply)
             except Exception:
                 pass
-
+        """
+        
         return {
             "conversation_id": conv_id,
             "message_id": msg_id,
