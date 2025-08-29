@@ -14,7 +14,7 @@ from app.routes.nlu_router import router as nlu_router
 from app.routes.rag_router import router as rag_router
 from app.routes.ethics_router import router as ethics_router
 from app.routes.template_filter_router import router as template_filter_router
-from app.routes.filler_public_router import router as filler_public_router
+from app.routes.filter_public_router import router as filter_public_router
 
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
