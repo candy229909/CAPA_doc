@@ -3,7 +3,7 @@ import {
   Send, Plus, Menu, MessageSquare, Trash2, Edit3,
   Check, X, File as FileIcon, Upload, Download
 } from 'lucide-react';
-
+import { Link, useNavigate } from 'react-router-dom';
 // ✅ 更新版本重點：
 // 1) 使用 WebSocket 連線 FastAPI /ws/chat，支援訊息即時傳送與流式接收。
 // 2) 訊息來源區分 user、assistant (AI)、RAG 模組（未來擴充）、system 系統提示，依來源套用不同樣式。
@@ -457,6 +457,12 @@ const ChatInterface = () => {
           <button onClick={() => setSidebarOpen(o => !o)} className="p-2 hover:bg-gray-700 rounded"><Menu size={20} /></button>
           <div className="text-lg font-semibold">AI 對話系統</div>
           <div className="flex items-center gap-2">
+            <Link
+            to="/template-filler"
+            className="px-3 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm"
+            >
+            上傳/處理頁
+            </Link>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".doc,.docx" />
             <button onClick={() => fileInputRef.current?.click()} disabled={isUploading || isLoading} className="p-2 hover:bg-gray-700 rounded flex-shrink-0" title="上傳檔案">
               <Upload size={18} />
