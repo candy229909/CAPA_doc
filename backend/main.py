@@ -13,6 +13,9 @@ from app.routes.law_router import router as law_router
 from app.routes.nlu_router import router as nlu_router
 from app.routes.rag_router import router as rag_router
 from app.routes.ethics_router import router as ethics_router
+from app.routes.template_filter_router import router as template_filter_router
+from app.routes.filler_public_router import router as filler_public_router
+
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -63,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(nlu_router,          prefix="/api/nlu", tags=["nlu"])
     app.include_router(rag_router,          prefix="/api/rag", tags=["rag"])
     app.include_router(ethics_router,       prefix="/api/ethics", tags=["ethics"])
+    app.include_router(template_filter_router, prefix="/api/template_filter", tags=["template"])
 
     @app.get("/")
     async def root():

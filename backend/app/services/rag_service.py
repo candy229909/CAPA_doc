@@ -1,6 +1,14 @@
 # backend/app/services/rag_service.py
 from typing import Optional, List, Dict, Any
 import logging
+import os
+
+try:
+    import httpx  # type: ignore
+except Exception:  # pragma: no cover - missing dependency at runtime
+    httpx = None
+
+logger = logging.getLogger(__name__)
 
 try:
     from pymilvus import MilvusClient  # 可選
@@ -10,15 +18,15 @@ except Exception:
 # DSPy 可用就用，不可用就優雅退回
 try:
     from app.services.dspy_service import ai_api as dspy_service  # type: ignore
-except Exception:
+except Exception as e:
     try:
+        logger.warning("DSPy service import failed: %s", e)
         from app.backup.dspy_service_backup import dspy_service  # type: ignore
-    except Exception:
+    except Exception as e:
+        logger.warning("Backup DSPy service import failed: %s", e)
         dspy_service = None
 
 from app.services.law_service import LawService  # LLM 產生 Cypher + Neo4j 查詢
-
-logger = logging.getLogger(__name__)
 
 class GraphRAGService:
     """
@@ -29,11 +37,13 @@ class GraphRAGService:
 
     注意：milvus 與 embedding_model 都是「可選」，不提供時不會啟用向量檢索。
     """
-    def __init__(self, neo4j, milvus_uri: Optional[str] = None, embedding_model=None):
+    def __init__(self, neo4j, milvus_uri: Optional[str] = None, embedding_model=None, dspy_api_url: Optional[str]=None,):
         self.neo4j = neo4j
         self.law = LawService(neo4j)
         self.milvus_client = MilvusClient(milvus_uri) if milvus_uri else None
         self.embedding_model = embedding_model
+        # 允許透過環境變數或參數設定 DSPy HTTP 服務位置
+        self.dspy_api_url = dspy_api_url or os.getenv("DSPY_API_URL")
     
     def retrieve_context(self, query: str, collection_name: str, version_tag: str):
         """
@@ -80,21 +90,32 @@ class GraphRAGService:
         context = "\n\n".join(d["content"][:1200] for d in documents[:3] if d["content"])
 
         advice = None
-        logger.info(f"This is rag_service and the context is {context} and dspy_service {dspy_service}")
-        if dspy_service and context:
+        if dspy_service or (self.dspy_api_url and httpx):
             try:
                 pred = None
-                if hasattr(dspy_service, "generate_legal_advice"):
-                    pred = dspy_service.generate_legal_advice(
-                        question=question,
-                        context=context,
-                        retrieved_docs=[d["content"] for d in documents if d["content"]],
-                    )
-                elif hasattr(dspy_service, "process_message"):
-                    pred = await dspy_service.process_message(
-                        session_id="graph_rag",
-                        text=f"{question}\n{context}",
-                    )
+                if dspy_service:
+                    if hasattr(dspy_service, "generate_legal_advice"):
+                        pred = dspy_service.generate_legal_advice(
+                            question=question,
+                            context=context,
+                            retrieved_docs=[d["content"] for d in documents if d["content"]],
+                        )
+                    elif hasattr(dspy_service, "process_message"):
+                        text = f"{question}\n{context}" if context else question
+                        pred = await dspy_service.process_message(
+                            session_id="graph_rag",
+                            text=text,
+                        )
+                else:
+                    text = f"{question}\n{context}" if context else question
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(
+                            f"{self.dspy_api_url.rstrip('/')}/chat",
+                            json={"session_id": "graph_rag", "text": text},
+                            timeout=15,
+                        )
+                        resp.raise_for_status()
+                        pred = resp.json()
 
                 if pred is not None:
                     advice = (
@@ -108,6 +129,8 @@ class GraphRAGService:
             except Exception as e:
                 logger.exception("DSPy generation failed: %s", e)
                 advice = None
+        else:
+            logger.debug("No DSPy service configured; skipping generation")
 
         return {
             "cypher": cypher,       # ← 不再取未定義的 res
