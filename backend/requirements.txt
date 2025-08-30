@@ -1,12 +1,12 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
 motor==3.3.2
 pymongo==4.6.0
 neo4j==5.15.0
 redis==5.0.1
 httpx==0.25.2
 python-multipart==0.0.6
-pydantic==2.5.0
+pydantic==2.9.1
 pydantic-settings==2.1.0
 dspy-ai==2.4.9
 numpy==1.24.3
@@ -21,3 +21,10 @@ python-docx
 faiss-cpu
 pymilvus==2.6.0
 spacy==3.7.4
+sentence-transformers==3.0.1
+torch==2.3.1 --extra-index-url https://download.pytorch.org/whl/cpu
+openai==1.45.0
+regex
+pypdf
+python-pptx
+openai
