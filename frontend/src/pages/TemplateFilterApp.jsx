@@ -63,7 +63,7 @@ export default function TemplateFilterApp() {
   /** 連線 WS（主要路徑失敗→自動改用備援） */
   const connectWS = (moduleId) => {
     // 關閉舊連線
-    try { wsRef.current?.close(); } catch {}
+    try { wsRef.current?.close(1000, "switch_module"); } catch {}
     setSocketReady(false);
     if (!moduleId) return;
 
@@ -128,7 +128,7 @@ export default function TemplateFilterApp() {
     if (!selectedModuleId) return;
     connectWS(selectedModuleId);
     return () => {
-      try { wsRef.current?.close(); } catch {}
+      try { wsRef.current?.close(1000, "switch_module"); } catch {}
       if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -186,7 +186,28 @@ export default function TemplateFilterApp() {
     } catch (e) {
       setBanner({ type: "error", text: "WS 發送失敗" });
     }
+  }
+
+  // 以「右鍵」刪除模組（不新增任何可見 UI 元素）
+  const handleDeleteModule = async (id) => {
+    if (!id) return;
+    try {
+      const res = await fetch(api(`/api/modules/${id}`), { method: "DELETE" });
+      if (!res.ok) throw new Error("刪除失敗");
+      // 若刪的是當前模組：關閉 WS & 清空狀態
+      if (id === selectedModuleId) {
+        try { wsRef.current?.close(1000, "module_deleted"); } catch {}
+        setSelectedModuleId(null);
+        setCurrent(null);
+        setMessages([]);
+        setSocketReady(false);
+      }
+      await refreshModules();
+    } catch (e) {
+      setBanner({ type: "error", text: e.message || "刪除失敗" });
+    }
   };
+;
 
   return (
     <div className="p-4">
@@ -242,7 +263,7 @@ export default function TemplateFilterApp() {
                 <div
                   key={m.id}
                   className={`p-2 border rounded cursor-pointer ${selectedModuleId === m.id ? "bg-indigo-50 border-indigo-300" : "hover:bg-gray-50"}`}
-                  onClick={() => loadModuleDetail(m.id)}
+                  onClick={(e) => { if (e && (e.metaKey || e.ctrlKey || e.altKey)) { e.preventDefault(); return handleDeleteModule(m.id); } loadModuleDetail(m.id); }} onContextMenu={(e)=>{e.preventDefault(); handleDeleteModule(m.id);}}
                 >
                   <div className="text-sm font-medium truncate">{m.name || m.title || m.id}</div>
                   {typeof m.progress === "number" && (
@@ -264,7 +285,12 @@ export default function TemplateFilterApp() {
                 <button
                   onClick={async () => {
                     try {
-                      const res = await fetch(api(`/api/modules/${current.id}/export`));
+                      let res;
+                      try { res = await fetch(api(`/api/modules/${(current?.moduleId || selectedModuleId || current?.id)}/export`)); }
+                      catch (err) {
+                        window.open(api(`/api/modules/${(current?.moduleId || selectedModuleId || current?.id)}/export`), "_blank");
+                        return;
+                      }
                       if (!res.ok) throw new Error(`匯出失敗 (${res.status})`);
                       const blob = await res.blob();
                       const url = URL.createObjectURL(blob);

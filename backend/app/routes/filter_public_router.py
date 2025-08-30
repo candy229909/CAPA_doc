@@ -162,6 +162,22 @@ async def build_prompt(inp: BuildPromptIn):
     return JSONResponse({"prompt": prompt})
 
 # ---------- WebSocket ----------
+
+@router.delete("/api/modules/{module_id}")
+async def delete_module(module_id: str):
+    """刪除模組：關閉所有連線、移除記憶體資料。"""
+    if module_id not in MODULES:
+        raise HTTPException(status_code=404, detail="Module not found")
+    # 關閉所有 WebSocket 連線
+    for ws in list(CONNS.get(module_id, set())):
+        try:
+            await ws.close(code=1000, reason="module_deleted")
+        except Exception:
+            pass
+    CONNS.pop(module_id, None)
+    LOCKS.pop(module_id, None)
+    MODULES.pop(module_id, None)
+    return JSONResponse({"ok": True})
 @router.websocket("/ws/fill")
 async def ws_fill(ws: WebSocket, moduleId: str):
     await ws.accept()

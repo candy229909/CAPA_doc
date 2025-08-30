@@ -32,7 +32,13 @@ async def ws_chat(websocket: WebSocket):
     # Initialize services for this connection
     svc = ChatService(websocket.app.state.mongo, websocket.app.state.neo4j)
     # Pre-create a RAG service for potential knowledge retrieval
-    rag_service = GraphRAGService(websocket.app.state.neo4j)
+    MILVUS_URI = os.getenv("MILVUS_URI")
+    try:
+        from app.vectorizers import _get_model as _embed_model
+        EMBEDDING_MODEL = _embed_model() if MILVUS_URI else None
+    except Exception:
+        EMBEDDING_MODEL = None
+    rag_service = GraphRAGService(websocket.app.state.neo4j, MILVUS_URI, EMBEDDING_MODEL)
     try:
         while True:
             data = await websocket.receive_json()
@@ -90,18 +96,10 @@ async def ws_chat(websocket: WebSocket):
                         )
                     else:
                         await websocket.send_json({
-                            "status": "need",
-                            "message": "查無相關法條，請改寫問題或選擇一般回答。",
+                            "status": "rag",
+                            "message": "未找到法條，改用一般回答模式。",
                             "payload": {},
                         })
-                        fail_reply = "查無相關法條，請改寫問題或改用一般模式。"
-                        await svc._save_message(conv_id, "assistant", fail_reply)
-                        await websocket.send_json({
-                            "status": "final",
-                            "message": fail_reply,
-                            "payload": {"conversation_id": conv_id},
-                        })
-                        continue
                 except Exception as e:
                     logger.exception("Law retrieval failed: %s", e)
                     context = ""
